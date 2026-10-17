@@ -24,17 +24,26 @@ export function Modal({
   wide?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // onClose 往往是每次渲染新建的函数；放进 ref，避免输入时弹窗反复“重新打开”把焦点抢到关闭按钮上
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRef.current();
     window.addEventListener("keydown", onKey);
-    setTimeout(() => ref.current?.querySelector<HTMLElement>("input, textarea, button")?.focus(), 30);
+    const t = setTimeout(() => {
+      const box = ref.current;
+      if (!box || box.contains(document.activeElement)) return;
+      (box.querySelector<HTMLElement>("input:not([type=checkbox]):not([type=file]), textarea, select")
+        || box.querySelector<HTMLElement>("button:not([aria-label='关闭'])"))?.focus();
+    }, 30);
     return () => {
+      clearTimeout(t);
       window.removeEventListener("keydown", onKey);
       prev?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 anim-fade" style={{ background: "var(--overlay)" }}
