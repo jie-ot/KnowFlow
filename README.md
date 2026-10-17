@@ -33,16 +33,30 @@ KnowFlow 有三种用法，用的是同一套代码和同一份数据：
 
 | 用法 | 需要装什么 | 怎么启动 |
 | --- | --- | --- |
-| **桌面应用** | 什么都不用装 | 下载 `KnowFlow-macOS.zip` 或 `KnowFlow-Windows.zip`，解压后双击 |
+| **桌面应用** | 什么都不用装 | 一条命令安装（见下），或下载 zip 解压后双击 |
 | **网页端** | Python 3.11+ | `python run.py`，自动用浏览器打开 |
 | **桌面窗口（源码运行）** | Python 3.11+ | `python run.py --app`，用独立窗口打开 |
 
 ### 桌面应用
 
-在仓库的 **Releases** 页面下载，或在 **Actions › 打包桌面应用** 的运行记录底部下载 Artifacts。
+**推荐：一条命令安装**（也用于更新到最新版）。用命令下载的文件不带“来自互联网”标记，所以不会弹系统的安全提示：
 
+```powershell
+# Windows：在 PowerShell 里运行，装到 %LOCALAPPDATA%\Programs\KnowFlow，并在桌面和开始菜单建快捷方式
+irm https://raw.githubusercontent.com/jie-ot/KnowFlow/main/install.ps1 | iex
+```
+
+```bash
+# macOS（Apple 芯片）：在终端里运行，装到“应用程序”文件夹
+curl -fsSL https://raw.githubusercontent.com/jie-ot/KnowFlow/main/install.sh | bash
+```
+
+**手动下载**：在仓库的 **Releases** 页面下载 zip。
+
+- **Windows**：下载后先右键 zip › 属性 › 勾选“解除锁定” › 确定，再解压，双击 `KnowFlow\KnowFlow.exe`。没解除锁定的话，SmartScreen 会提示“Windows 已保护你的电脑”（点“更多信息”›“仍要运行”）。窗口依赖系统自带的 WebView2，Windows 10/11 一般已经装好；万一窗口组件起不来，会自动改用 Edge 的应用窗口打开。
 - **macOS**：解压得到 `KnowFlow.app`，拖进“应用程序”文件夹。因为没有 Apple 开发者签名，第一次打开要右键点它，选“打开”，再点“打开”；或者在终端运行 `xattr -dr com.apple.quarantine /Applications/KnowFlow.app`。目前打的是 Apple 芯片版本。
-- **Windows**：解压后双击 `KnowFlow\KnowFlow.exe`。如果 SmartScreen 提示“已保护你的电脑”，点“更多信息”›“仍要运行”。窗口依赖系统自带的 WebView2，Windows 10/11 一般已经装好。
+
+> 这些提示是因为应用没有购买代码签名证书，并不是程序有问题。要彻底去掉，需要购买 Windows 代码签名证书、加入 Apple 开发者计划并对应用签名；本项目没有做签名，用上面的一条命令安装就不会遇到。
 
 桌面应用的数据存放在：macOS 的 `~/Library/Application Support/KnowFlow`，Windows 的 `%APPDATA%\KnowFlow`。
 
@@ -146,6 +160,9 @@ backend/.venv/bin/python packaging/build_desktop.py   # 生成 dist/KnowFlow.app
 
 **Windows 上提示找不到 Python，或输入 python 打开了微软商店**
 从 python.org 安装 Python，安装时勾选 “Add python.exe to PATH”；再到 设置 › 应用 › 高级应用设置 › 应用执行别名，关掉 python.exe 和 python3.exe。
+
+**Windows 双击 KnowFlow.exe 报 “Failed to resolve Python.Runtime.Loader.Initialize”**
+zip 是用浏览器下载、资源管理器解压的，文件带着“来自互联网”标记，.NET 拒绝加载。新版本会在启动时自动清除这个标记；旧版本在 PowerShell 里运行 `Get-ChildItem -Recurse "解压出来的 KnowFlow 文件夹" | Unblock-File` 后再打开，或者直接用上面的一条命令安装。
 
 **想清理安装的依赖**
 删除 `backend/.venv` 即可，源代码和 `backend/data/` 不受影响。

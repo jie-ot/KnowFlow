@@ -24,6 +24,16 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from make_icon import build as build_icon  # noqa: E402
 
+# Windows：允许 .NET 加载带“来自互联网”标记的 DLL（pywebview 通过 pythonnet 使用 .NET），
+# 与 desktop_entry.unblock_bundle() 互为保险
+EXE_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <runtime>
+    <loadFromRemoteSources enabled="true"/>
+  </runtime>
+</configuration>
+"""
+
 
 def main() -> None:
     # Windows 的控制台默认不是 UTF-8，打印中文会报 UnicodeEncodeError 导致打包步骤失败
@@ -57,6 +67,8 @@ def main() -> None:
         args += ["--osx-bundle-identifier", "com.knowflow.app"]
     PyInstaller.__main__.run(args)
     target = ROOT / "dist" / ("KnowFlow.app" if sys.platform == "darwin" else "KnowFlow")
+    if sys.platform == "win32":
+        (target / "KnowFlow.exe.config").write_text(EXE_CONFIG, encoding="utf-8")
     print(f"\n打包完成：{target}")
 
 

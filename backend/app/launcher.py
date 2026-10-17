@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -48,6 +50,67 @@ def wait_until_ready(url: str, timeout: float = 30) -> bool:
     return False
 
 
+def open_window(url: str) -> None:
+    """用 pywebview 打开独立窗口，关闭窗口后返回。"""
+    import webview
+
+    if sys.platform == "win32":
+        from webview.platforms import winforms  # 先加载 .NET 组件，失败直接抛出
+
+        if winforms.renderer != "edgechromium":  # 没有 WebView2 时会退回 IE 内核，页面跑不起来
+            raise RuntimeError(f"WebView2 不可用（{winforms.renderer}）")
+    webview.settings["ALLOW_DOWNLOADS"] = True  # 导出 .md / HTML 需要
+    webview.create_window("KnowFlow", url, width=1320, height=860, min_size=(980, 640))
+    webview.start()
+
+
+def _chromium() -> str | None:
+    """找一个支持 --app 窗口模式的浏览器：Windows 自带的 Edge，或者 Chrome。"""
+    found: list[str] = []
+    if sys.platform == "win32":
+        for env in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA"):
+            base = os.environ.get(env)
+            if base:
+                found += [os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe"),
+                          os.path.join(base, "Google", "Chrome", "Application", "chrome.exe")]
+    elif sys.platform == "darwin":
+        found += ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"]
+    else:
+        found += [p for p in map(shutil.which, ("google-chrome", "chromium", "chromium-browser", "microsoft-edge")) if p]
+    return next((p for p in found if os.path.exists(p)), None)
+
+
+def browser_window(url: str) -> None:
+    """备用方案：用 Edge / Chrome 的“应用窗口”打开（没有地址栏），关闭窗口后返回。"""
+    exe = _chromium()
+    if exe:
+        profile = config.DATA_DIR / "window-profile"  # 独立配置目录，保证是一个单独的进程，能等到它关闭
+        try:
+            subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}", "--window-size=1320,860",
+                              "--no-first-run", "--no-default-browser-check"]).wait()
+            return
+        except OSError:
+            pass
+    webbrowser.open(url)
+    notify(f"KnowFlow 已在浏览器中打开：\n{url}\n\n用完后点「确定」退出。")
+
+
+def notify(text: str) -> None:
+    """打包后的程序没有控制台，用系统对话框提示；源码运行时打印到终端并等待。"""
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(0, text, "KnowFlow", 0x40)
+    else:
+        print(text, file=sys.stderr, flush=True)
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="knowflow", description="KnowFlow 智能复习助手")
     parser.add_argument("--app", action="store_true", help="用独立的桌面窗口打开")
@@ -72,19 +135,16 @@ def main(argv: list[str] | None = None) -> int:
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", log_config=None))
 
     if args.app:
-        try:
-            import webview  # pywebview
-        except ImportError:
-            print("桌面窗口需要 pywebview：pip install -r requirements-desktop.txt", file=sys.stderr)
-            return 1
         thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
         if not wait_until_ready(url):
-            print("后端没有在 30 秒内启动", file=sys.stderr)
+            notify(f"后端没有在 30 秒内启动，可以稍后用浏览器访问 {url}")
             return 1
-        webview.settings["ALLOW_DOWNLOADS"] = True  # 导出 .md / HTML 需要
-        webview.create_window("KnowFlow", url, width=1320, height=860, min_size=(980, 640))
-        webview.start()  # 关闭窗口后返回
+        try:
+            open_window(url)  # 关闭窗口后返回
+        except Exception as exc:  # 窗口组件起不来（没装 pywebview、缺 WebView2、DLL 被系统拦截……）
+            print(f"桌面窗口启动失败（{exc!r}），改用浏览器窗口打开", file=sys.stderr)
+            browser_window(url)
         server.should_exit = True
         thread.join(timeout=5)
         return 0
