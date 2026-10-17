@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # backend/
 WEB_DIR = Path(__file__).resolve().parent / "web"  # 编译好的前端静态网页

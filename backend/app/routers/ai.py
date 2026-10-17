@@ -330,7 +330,7 @@ def _prepare(conn: sqlite3.Connection, body: RunIn, cfg: ModelConfig, limit: int
             blocks.append(f"[{alias}] 《{r['original_name']}》{r['label']}\n{r['text']}")
         joined = "\n\n".join(blocks)
         chars = sum(char_count(r["text"]) for r in units)
-        _check_length(chars, limit, joined)
+        _check_length(chars, limit * COMPOSE_LIMIT_FACTOR, joined)  # 分批整理，可以比单次上限多
         # 资料多时分批整理：每批的输出都放得进模型的输出上限，避免 JSON 被截断
         batches: list[list[str]] = [[]]
         size = 0
@@ -386,6 +386,7 @@ def _prepare(conn: sqlite3.Connection, body: RunIn, cfg: ModelConfig, limit: int
 # ---------- 结构化结果的解析与校验
 
 COMPOSE_BATCH_CHARS = 3000
+COMPOSE_LIMIT_FACTOR = 4
 COMPOSE_BATCH_UNITS = 10
 
 
@@ -753,6 +754,7 @@ class AcceptIn(BaseModel):
     title: str | None = Field(default=None, max_length=100)  # compose
     items: list[dict[str, str]] | None = Field(default=None, max_length=50)  # extract
     tasks: list[dict[str, Any]] | None = Field(default=None, max_length=60)  # plan
+    course_id: str | None = None  # compose：存到哪个学科（默认资料所在的学科）
 
 
 @router.get("/ai/drafts/{draft_id}")
@@ -846,14 +848,15 @@ def accept_draft(draft_id: str, body: AcceptIn, conn: sqlite3.Connection = Depen
         title = (body.title or result.get("title") or "资料整理笔记").strip()[:100]
         if not content:
             raise AppError(422, "VALIDATION", "内容不能为空", field="content")
-        get_course(conn, draft["course_id"])
+        course_id = body.course_id or draft["course_id"]
+        get_course(conn, course_id)
         note_id = new_id()
         edited = content != result.get("content", "").strip() or title != result.get("title")
         with conn:
             conn.execute(
                 "INSERT INTO notes(id, course_id, title, content, tags, version, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, '[]', 1, ?, ?)",
-                (note_id, draft["course_id"], title, content, now, now),
+                (note_id, course_id, title, content, now, now),
             )
             conn.executemany(
                 "INSERT INTO note_sources(id, note_id, ord, material_id, unit_id, material_name, locator, label, "

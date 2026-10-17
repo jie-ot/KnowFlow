@@ -5,7 +5,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { api, ApiError, Draft } from "@/lib/api";
 import { AiState } from "./ai";
 import { Markdown } from "./Markdown";
-import { Modal, Spinner, useToast } from "./ui";
+import { Modal, Spinner, useConfirm, useToast } from "./ui";
 
 function Elapsed({ since }: { since: number | null }) {
   const [now, setNow] = useState(Date.now());
@@ -47,12 +47,33 @@ export function AiProgress({ state, title, hint }: { state: AiState; title: stri
   );
 }
 
+/** AI 还在生成时关闭窗口：先确认，避免误以为它会在后台继续 */
+export function useStopGuard() {
+  const confirm = useConfirm();
+  const toast = useToast();
+  return async (state: AiState, close: () => void | Promise<void>) => {
+    if (state.running) {
+      const ok = await confirm({
+        title: "AI 还在整理，要停止吗？",
+        body: "关闭窗口会停止这次整理，不会在后台继续；已经生成的部分不会保存。原来的资料和笔记都不会被改动。",
+        confirm: "停止整理", cancel: "继续等待", danger: true,
+      });
+      if (!ok) return;
+      await close();
+      toast("已停止整理，没有保存任何内容");
+      return;
+    }
+    await close();
+  };
+}
+
 export function AiStatusLine({ state }: { state: AiState }) {
   if (state.running)
     return (
       <span className="flex items-center gap-2 text-[13px] text-muted">
         <Spinner size={12} /> 生成中，已用 <Elapsed since={state.startedAt} />
         {state.model && <span className="text-faint">（{state.model}）</span>}
+        <span className="text-faint">· 请勿关闭窗口，关闭即停止</span>
       </span>
     );
   if (state.error) return <span className="text-[13px] text-bad">{state.error.message}</span>;
@@ -108,17 +129,18 @@ export function CompareSheet({
       setSaving(false);
     }
   };
-  const discard = async () => {
+  const guard = useStopGuard();
+  const discard = () => guard(state, async () => {
     if (state.draft) await api(`/api/ai/drafts/${state.draft.id}/discard`, { method: "POST" }).catch(() => {});
     onClose();
-  };
+  });
 
   return (
     <Modal open={open} onClose={discard} wide
       title={<span className="flex items-center gap-2"><Sparkles size={15} className="text-accent" />{kind === "organize" ? "AI 整理" : "AI 摘要"}</span>}
       footer={<>
         <span className="mr-auto"><AiStatusLine state={state} /></span>
-        <button className="btn btn-outline" onClick={discard}>放弃</button>
+        <button className="btn btn-outline" onClick={discard}>{state.running ? "停止" : "放弃"}</button>
         <button className="btn btn-primary" disabled={!state.draft || saving} onClick={accept}>
           {edit !== null && edit !== state.draft?.output ? "修改后采纳" : "采纳"}
         </button>
@@ -181,17 +203,18 @@ export function ExtractSheet({
       setSaving(false);
     }
   };
-  const discard = async () => {
+  const guard = useStopGuard();
+  const discard = () => guard(state, async () => {
     if (state.draft) await api(`/api/ai/drafts/${state.draft.id}/discard`, { method: "POST" }).catch(() => {});
     onClose();
-  };
+  });
 
   return (
     <Modal open={open} onClose={discard} width={760}
       title={<span className="flex items-center gap-2"><Sparkles size={15} className="text-accent" />提炼知识点</span>}
       footer={<>
         <span className="mr-auto"><AiStatusLine state={state} /></span>
-        <button className="btn btn-outline" onClick={discard}>放弃</button>
+        <button className="btn btn-outline" onClick={discard}>{state.running ? "停止" : "放弃"}</button>
         <button className="btn btn-primary" disabled={!state.draft || saving || invalid || !items.length} onClick={accept}>
           加入卡组（{items.length} 张）
         </button>

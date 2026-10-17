@@ -6,6 +6,9 @@ import { colorOf } from "@/lib/format";
 
 /* ---------- 弹层 ---------- */
 
+const modalStack: number[] = [];
+let modalSeq = 0;
+
 export function Modal({
   open,
   onClose,
@@ -30,7 +33,10 @@ export function Modal({
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRef.current();
+    const id = ++modalSeq;
+    modalStack.push(id);
+    // 弹窗叠在一起时（比如确认框盖在 AI 弹窗上），Esc 只关最上面那个
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && modalStack[modalStack.length - 1] === id && closeRef.current();
     window.addEventListener("keydown", onKey);
     const t = setTimeout(() => {
       const box = ref.current;
@@ -40,6 +46,7 @@ export function Modal({
     }, 30);
     return () => {
       clearTimeout(t);
+      modalStack.splice(modalStack.indexOf(id), 1);
       window.removeEventListener("keydown", onKey);
       prev?.focus?.();
     };
@@ -96,7 +103,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 /* ---------- 确认框 ---------- */
 
-type ConfirmOpts = { title: string; body?: ReactNode; confirm?: string; danger?: boolean };
+type ConfirmOpts = { title: string; body?: ReactNode; confirm?: string; cancel?: string; danger?: boolean };
 const ConfirmCtx = createContext<(o: ConfirmOpts) => Promise<boolean>>(async () => false);
 export const useConfirm = () => useContext(ConfirmCtx);
 
@@ -116,8 +123,8 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
             <h2 className="text-[16px] font-semibold mb-2">{state.title}</h2>
             {state.body && <div className="text-[14px] text-muted leading-relaxed">{state.body}</div>}
             <div className="flex justify-end gap-2 mt-6">
-              <button className="btn btn-outline" onClick={() => close(false)}>取消</button>
-              <button className={`btn ${state.danger ? "" : "btn-primary"}`} autoFocus
+              <button className="btn btn-outline" onClick={() => close(false)} autoFocus={state.danger}>{state.cancel || "取消"}</button>
+              <button className={`btn ${state.danger ? "" : "btn-primary"}`} autoFocus={!state.danger}
                 style={state.danger ? { background: "var(--bad)", color: "#fff" } : undefined}
                 onClick={() => close(true)}>
                 {state.confirm || "确定"}

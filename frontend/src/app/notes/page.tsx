@@ -285,6 +285,9 @@ function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDel
   const [lastRun, setLastRun] = useState<Record<string, unknown>>({});
   const version = useRef(0);
   const loaded = useRef(false);
+  // 编辑框里真的已经填进了这篇笔记的内容。只看 loaded 不够：它在填内容的同一轮就变成 true，
+  // 那一刻标题和正文还是空的，会被误判为“改动”（曾导致切换笔记时把空内容存了回去）
+  const [hydrated, setHydrated] = useState(false);
   const ai = useAiTask();
   const toast = useToast();
   const confirm = useConfirm();
@@ -303,6 +306,7 @@ function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDel
         if (startEdit) setTimeout(() => editorRef.current?.focus(), 80);
       }
       loaded.current = true;
+      setHydrated(true);
     }
   }, [note]);
 
@@ -325,17 +329,26 @@ function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDel
 
   // 自动保存：停止输入 800 ms 后保存
   useEffect(() => {
-    if (!note || !loaded.current) return;
-    if (title === note.title && content === note.content) return;
+    if (!note || !hydrated) return;
+    if (title === note.title && content === note.content) {
+      pending.current = null;
+      return;
+    }
     setSaveState("dirty");
     pending.current = { title, content };
     const t = setTimeout(() => save({ title, content }), 800);
     return () => clearTimeout(t);
-  }, [title, content]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [title, content, hydrated]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 切到别的笔记（或点了双链）时，把还没来得及自动保存的改动存掉
+  const noteRef = useRef(note);
+  noteRef.current = note;
   useEffect(() => () => {
-    if (pending.current) {
+    const p = pending.current;
+    const n = noteRef.current;
+    // 保险：标题和正文都是空的、而原笔记有内容时，绝不保存
+    if (p && n && !String(p.title || "").trim() && !String(p.content || "").trim() && (n.content.trim() || n.title.trim())) return;
+    if (p) {
       api(`/api/notes/${id}`, { method: "PATCH", json: { ...pending.current, base_version: version.current } })
         .then(onChanged).catch(() => {});
     }

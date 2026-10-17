@@ -8,7 +8,7 @@ import useSWR, { mutate as globalMutate } from "swr";
 import { api, ApiError, Course, fetcher, NoteSummary, Plan, Problem, Task } from "@/lib/api";
 import { dayLabel, TASK_KINDS } from "@/lib/format";
 import { useAiTask } from "@/components/ai";
-import { AiProgress, AiStatusLine, Warnings } from "@/components/AiSheets";
+import { AiProgress, AiStatusLine, useStopGuard, Warnings } from "@/components/AiSheets";
 import { PlanCalendar } from "@/components/PlanCalendar";
 import { FocusButton } from "@/components/Focus";
 import { Dot, Empty, Modal, PageHeader, useConfirm, useToast } from "@/components/ui";
@@ -327,9 +327,11 @@ function PlanAiSheet({ open, plan, onClose, onAccepted }: { open: boolean; plan:
   const begun = ai.state.running || ai.state.draft || ai.state.error;
   const problemFor = (i: number) => problems.filter((p) => p.index === i);
   const general = problems.filter((p) => p.index === null);
+  const guard = useStopGuard();
+  const close = () => guard(ai.state, () => { ai.reset(); onClose(); });
 
   return (
-    <Modal open={open} onClose={onClose} width={820}
+    <Modal open={open} onClose={close} width={820}
       title={<span className="flex items-center gap-2"><Sparkles size={15} className="text-accent" />AI 拆任务</span>}
       footer={begun ? <>
         <span className="mr-auto"><AiStatusLine state={ai.state} /></span>

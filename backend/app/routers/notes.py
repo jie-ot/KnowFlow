@@ -136,6 +136,9 @@ def update_note(note_id: str, body: NotePatch, conn: sqlite3.Connection = Depend
     sets = ", ".join(f"{k} = ?" for k in fields)
     renamed = 0
     with conn:
+        # 正文被清空时先存一份旧版本，误操作也能在“修订历史”里找回
+        if "content" in fields and not fields["content"].strip() and (note["content"] or "").strip():
+            save_revision(conn, note, "before_clear")
         conn.execute(
             f"UPDATE notes SET {sets}, version = version + 1, updated_at = ? WHERE id = ?",
             (*fields.values(), now_iso(), note_id),

@@ -5,10 +5,10 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
-import { API, api, ApiError, fetcher, Material, Note, Unit } from "@/lib/api";
+import { API, api, ApiError, Course, fetcher, Material, Note, Unit } from "@/lib/api";
 import { sizeLabel } from "@/lib/format";
 import { useAiTask } from "@/components/ai";
-import { AiProgress, AiStatusLine, Warnings } from "@/components/AiSheets";
+import { AiProgress, AiStatusLine, useStopGuard, Warnings } from "@/components/AiSheets";
 import { StatusPill } from "@/components/MaterialBits";
 import { Markdown } from "@/components/Markdown";
 import { Modal, useConfirm, useToast } from "@/components/ui";
@@ -48,7 +48,7 @@ function MaterialDetail() {
   if (!m) return <div className="p-10 text-muted text-[14px]">正在打开…</div>;
   const units = m.units || [];
   const chars = units.filter((u) => picked.has(u.id)).reduce((s, u) => s + u.char_count, 0);
-  const limit = ai?.max_input_chars || 16000;
+  const limit = (ai?.max_input_chars || 16000) * 4; // 资料整理会分批进行，可以一次选得比单次上限多
 
   const toggle = (u: Unit, i: number, shift: boolean) => {
     setPicked((s) => {
@@ -137,22 +137,25 @@ function MaterialDetail() {
       {picked.size > 0 && (
         <div className="anim-sheet fixed bottom-6 left-[calc(50%+116px)] -translate-x-1/2 z-20 flex items-center gap-4 pl-5 pr-2 h-14 rounded-2xl bg-paper border border-rule shadow-2xl">
           <span className="text-[13.5px]">已选 {picked.size} 段，共 <b className={chars > limit ? "text-bad" : ""}>{chars.toLocaleString()}</b> 字</span>
-          {chars > limit && <span className="text-[12px] text-bad">超过单次 {limit} 字上限</span>}
+          {chars > limit && <span className="text-[12px] text-bad">超过 {limit} 字上限，请少选一些</span>}
           <button className="btn btn-primary h-10 px-4" disabled={chars > limit} onClick={() => setComposing(true)}><Sparkles size={14} />整理成笔记</button>
         </div>
       )}
 
-      <ComposeSheet open={composing} unitIds={[...picked]} onClose={() => setComposing(false)}
+      <ComposeSheet open={composing} unitIds={[...picked]} defaultCourse={m?.course_id} onClose={() => setComposing(false)}
         onSaved={(note) => { setComposing(false); toast("已保存为笔记"); globalMutate("/api/courses"); router.push(`/notes?id=${note.id}`); }} />
       <UnitEditor unit={editingUnit} materialId={id} onClose={() => setEditingUnit(null)} onSaved={() => mutate()} />
     </div>
   );
 }
 
-function ComposeSheet({ open, unitIds, onClose, onSaved }: {
-  open: boolean; unitIds: string[]; onClose: () => void; onSaved: (n: Note) => void;
+function ComposeSheet({ open, unitIds, defaultCourse, onClose, onSaved }: {
+  open: boolean; unitIds: string[]; defaultCourse?: string; onClose: () => void; onSaved: (n: Note) => void;
 }) {
   const ai = useAiTask();
+  const { data: courses } = useSWR<Course[]>(open ? "/api/courses" : null, fetcher);
+  const [courseId, setCourseId] = useState("");
+  useEffect(() => { if (open) setCourseId(defaultCourse || ""); }, [open, defaultCourse]);
   const [instruction, setInstruction] = useState("");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState<string | null>(null);
@@ -171,7 +174,7 @@ function ComposeSheet({ open, unitIds, onClose, onSaved }: {
     setSaving(true);
     try {
       const r = await api<{ note: Note }>(`/api/ai/drafts/${ai.state.draft.id}/accept`, {
-        method: "POST", json: { title, content: content ?? result?.content },
+        method: "POST", json: { title, content: content ?? result?.content, course_id: courseId || null },
       });
       onSaved(r.note);
     } catch (e) {
@@ -180,10 +183,12 @@ function ComposeSheet({ open, unitIds, onClose, onSaved }: {
       setSaving(false);
     }
   };
-  const discard = async () => {
+  const guard = useStopGuard();
+  const discard = () => guard(ai.state, async () => {
+    ai.cancel();
     if (ai.state.draft) await api(`/api/ai/drafts/${ai.state.draft.id}/discard`, { method: "POST" }).catch(() => {});
     onClose();
-  };
+  });
   const begun = ai.state.running || ai.state.draft || ai.state.error;
 
   return (
@@ -191,7 +196,7 @@ function ComposeSheet({ open, unitIds, onClose, onSaved }: {
       title={<span className="flex items-center gap-2"><Sparkles size={15} className="text-accent" />把资料整理成笔记</span>}
       footer={begun ? <>
         <span className="mr-auto"><AiStatusLine state={ai.state} /></span>
-        <button className="btn btn-outline" onClick={discard}>放弃</button>
+        <button className="btn btn-outline" onClick={discard}>{ai.state.running ? "停止整理" : "放弃"}</button>
         {ai.state.error && <button className="btn btn-outline" onClick={start}>重试</button>}
         <button className="btn btn-primary" disabled={!ai.state.draft || saving || !title.trim()} onClick={save}>保存为笔记</button>
       </> : <>
@@ -209,7 +214,7 @@ function ComposeSheet({ open, unitIds, onClose, onSaved }: {
         <div className="p-5 space-y-4 min-h-[50vh]">
           {ai.state.running && (
             <AiProgress state={ai.state} title="正在阅读资料并整理成笔记"
-              hint={`共 ${unitIds.length} 个片段。资料多时会分成几部分依次整理，每部分都标好出处，最后合成一篇笔记；中途可以点“放弃”。`} />
+              hint={`共 ${unitIds.length} 个片段。资料多时会分成几部分依次整理，每部分都标好出处，最后合成一篇笔记。整理只在这个窗口开着时进行：关闭窗口或点“停止整理”都会停止，不会在后台继续。`} />
           )}
           {ai.state.error && (
             <div className="rounded-xl px-4 py-3 bg-bad-soft text-[13px]">
@@ -221,6 +226,12 @@ function ComposeSheet({ open, unitIds, onClose, onSaved }: {
             <>
               <Warnings items={ai.state.draft!.warnings} />
               <input className="w-full bg-transparent outline-none font-serif text-[26px]" value={title} onChange={(e) => setTitle(e.target.value)} aria-label="笔记标题" />
+              <label className="flex items-center gap-2 text-[13px] text-muted">
+                保存到学科
+                <select className="input h-8 w-auto min-w-[180px] text-[13px]" value={courseId} onChange={(e) => setCourseId(e.target.value)}>
+                  {courses?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </label>
               <div className="flex justify-end">
                 <div className="seg">
                   <button data-on={content === null} onClick={() => setContent(null)}>预览</button>

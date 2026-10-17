@@ -2,7 +2,7 @@
 
 import { ShieldCheck } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { createContext, ReactNode, useCallback, useContext, useRef, useState } from "react";
+import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { AiProgressInfo, api, ApiError, Draft, runAi } from "@/lib/api";
 import { Modal, useToast } from "./ui";
 
@@ -125,6 +125,14 @@ export function useAiTask() {
     },
     [askConsent, toast, router],
   );
+
+  // 生成中关闭或刷新整个窗口时，浏览器先弹出确认
+  useEffect(() => {
+    if (!state.running) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [state.running]);
 
   const cancel = useCallback(() => {
     ctrl.current?.abort();

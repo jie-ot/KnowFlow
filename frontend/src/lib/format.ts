@@ -61,6 +61,7 @@ export const REVISION_REASON: Record<string, string> = {
   before_ai_organize: "AI 整理前",
   before_ai_summary: "加入 AI 摘要前",
   before_restore: "恢复旧版本前",
+  before_clear: "正文被清空前",
 };
 
 export const MATERIAL_STATUS: Record<string, { label: string; tone: string }> = {

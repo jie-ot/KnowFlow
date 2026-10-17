@@ -59,3 +59,13 @@ def test_link_endpoints(client):
     assert {"source": a, "target": b} in edges
     assert client.delete(f"/api/notes/{a}/links/{b}").json()["removed"] == 1
     assert {"source": a, "target": b} not in client.get("/api/graph").json()["edges"]
+
+
+def test_clearing_content_keeps_revision(client):
+    n = client.get("/api/notes").json()[0]
+    full = client.get(f"/api/notes/{n['id']}").json()
+    client.patch(f"/api/notes/{n['id']}", json={"title": "", "content": "", "base_version": full["version"]})
+    revs = client.get(f"/api/notes/{n['id']}/revisions").json()
+    assert revs and revs[0]["reason"] == "before_clear"
+    restored = client.post(f"/api/notes/{n['id']}/revisions/{revs[0]['id']}/restore").json()
+    assert restored["content"] == full["content"]
