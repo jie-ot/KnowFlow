@@ -1,26 +1,30 @@
 "use client";
 
-import { CheckCircle2, RotateCcw, Trash2, XCircle } from "lucide-react";
+import { CheckCircle2, Download, RotateCcw, Trash2, Upload, XCircle } from "lucide-react";
+import { useRef } from "react";
 import { useEffect, useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
-import { api, ApiError, fetcher, ModelConfig, NoteSummary } from "@/lib/api";
+import { api, ApiError, download, fetcher, ModelConfig, NoteSummary } from "@/lib/api";
 import { Empty, Modal, PageHeader, Spinner, useConfirm, useToast } from "@/components/ui";
 
-type Tab = "model" | "ai" | "trash";
+type Tab = "model" | "ai" | "backup" | "trash";
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>("model");
+  useEffect(() => { if (window.location.hash === "#backup") setTab("backup"); }, []);
   return (
     <div className="max-w-[760px] mx-auto px-10 py-12">
       <PageHeader title="设置" actions={
         <div className="seg">
           <button data-on={tab === "model"} onClick={() => setTab("model")}>大模型</button>
           <button data-on={tab === "ai"} onClick={() => setTab("ai")}>AI 选项</button>
+          <button data-on={tab === "backup"} onClick={() => setTab("backup")}>备份</button>
           <button data-on={tab === "trash"} onClick={() => setTab("trash")}>回收站</button>
         </div>
       } />
       {tab === "model" && <Models />}
       {tab === "ai" && <AiOptions />}
+      {tab === "backup" && <Backup />}
       {tab === "trash" && <Trash />}
     </div>
   );
@@ -198,6 +202,68 @@ function Trash() {
         ))}
       </div>
       {data?.length === 0 && <Empty title="回收站是空的" />}
+    </div>
+  );
+}
+
+function Backup() {
+  const [busy, setBusy] = useState<"" | "export" | "import">("");
+  const file = useRef<HTMLInputElement>(null);
+  const toast = useToast();
+  const confirm = useConfirm();
+  const exportAll = async () => {
+    setBusy("export");
+    try {
+      await download("/api/backup", {}, "KnowFlow-备份.zip");
+      toast("备份已下载，换电脑时在这里选它恢复即可");
+    } catch (e) {
+      toast((e as Error).message, "bad");
+    }
+    setBusy("");
+  };
+  const restore = async (f: File | undefined) => {
+    if (!f) return;
+    const ok = await confirm({
+      title: "用这个备份替换现在的全部数据？",
+      body: `会用「${f.name}」里的笔记、资料、卡片、复习记录和计划替换当前数据。恢复前会自动把现在的数据另存一份到数据文件夹；本机的大模型配置会保留。`,
+      confirm: "恢复", danger: true,
+    });
+    if (file.current) file.current.value = "";
+    if (!ok) return;
+    setBusy("import");
+    const form = new FormData();
+    form.append("file", f);
+    try {
+      const r = await api<{ materials: number; safety_copy: string }>("/api/restore", { method: "POST", body: form });
+      toast(`恢复完成（含 ${r.materials} 份资料原件）。原数据已另存为 ${r.safety_copy}`);
+      setTimeout(() => window.location.assign("/"), 1200);
+    } catch (e) {
+      toast((e as ApiError).message, "bad");
+    }
+    setBusy("");
+  };
+  return (
+    <div className="space-y-8">
+      <section>
+        <h2 className="text-[15px] font-semibold">导出全部数据</h2>
+        <p className="text-[13.5px] text-muted mt-1 leading-relaxed">
+          打包成一个 .zip：笔记、上传的资料原件、复习卡片和全部复习记录、学习计划、AI 小结和设置。
+          为了安全，<b className="text-ink font-medium">API Key 不会放进备份</b>，在新电脑上恢复后需要重新填写。
+        </p>
+        <button className="btn btn-primary mt-4" onClick={exportAll} disabled={!!busy}>
+          {busy === "export" ? <Spinner /> : <Download size={14} />}导出备份
+        </button>
+      </section>
+      <section className="pt-8 border-t border-rule">
+        <h2 className="text-[15px] font-semibold">从备份恢复</h2>
+        <p className="text-[13.5px] text-muted mt-1 leading-relaxed">
+          选择之前导出的备份文件，用它<b className="text-ink font-medium">替换</b>当前的全部数据。恢复前会自动把现在的数据另存一份，选错了也能找回。
+        </p>
+        <input ref={file} type="file" accept=".zip" hidden onChange={(e) => restore(e.target.files?.[0])} />
+        <button className="btn btn-outline mt-4" onClick={() => file.current?.click()} disabled={!!busy}>
+          {busy === "import" ? <Spinner /> : <Upload size={14} />}选择备份文件…
+        </button>
+      </section>
     </div>
   );
 }

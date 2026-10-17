@@ -79,6 +79,19 @@ export type Source = {
 
 export type Note = NoteSummary & { content: string; revision_count: number; sources: Source[] };
 
+export type NoteLinks = {
+  outgoing: { title: string; note_id: string | null; course_id: string | null }[];
+  backlinks: { id: string; title: string; course_id: string; snippet: string }[];
+};
+
+export type GraphNode = { id: string; title: string; course_id: string; degree: number; card_count: number; excerpt: string };
+export type GraphData = { nodes: GraphNode[]; edges: { source: string; target: string }[]; unresolved: number };
+
+export type CalendarData = {
+  today: string; tasks: Task[]; unscheduled: Task[]; reviews: Record<string, number>;
+  plans: { id: string; goal: string; deadline: string | null; course_id: string | null }[];
+};
+
 export type Revision = { id: string; title: string; reason: string; created_at: string; length: number };
 
 export type Card = {
@@ -103,7 +116,9 @@ export type Material = {
 export type Task = {
   id: string; plan_id: string; title: string; kind: string; status: "todo" | "in_progress" | "done";
   needs_review: boolean; due_date: string | null; estimated_minutes: number | null; note_ids: string[];
-  overdue: boolean; unscheduled: boolean; plan_goal?: string; course_name?: string | null; course_color?: string | null;
+  overdue: boolean; unscheduled: boolean; plan_goal?: string; course_id?: string | null; course_name?: string | null;
+  actual_minutes?: number;
+  course_color?: string | null;
 };
 
 export type Plan = {
@@ -174,6 +189,41 @@ export async function runAi(body: Record<string, unknown>, h: RunHandlers, signa
         else if (ev === "delta") h.onDelta?.(payload.text);
         else if (ev === "done") h.onDone?.(payload.draft);
         else if (ev === "error") h.onError?.(payload.error, payload.partial);
+      }
+    }
+  } catch (e) {
+    if ((e as Error).name !== "AbortError") throw e;
+  }
+}
+
+/** 通用 SSE 请求：POST JSON，逐个事件回调。请求本身失败（如 409）时抛出 ApiError。 */
+export async function postSse(path: string, body: unknown, onEvent: (event: string, data: Record<string, unknown>) => void,
+  signal?: AbortSignal) {
+  let res: Response;
+  try {
+    res = await fetch(API + path, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
+    });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") return;
+    throw new ApiError(0, { code: "OFFLINE", message: "连不上本地后端，请确认 KnowFlow 正在运行" });
+  }
+  if (!res.ok || !res.body) await handle(res);
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const ev = block.match(/^event: (.*)$/m)?.[1];
+        const data = block.match(/^data: (.*)$/m)?.[1];
+        if (ev && data) onEvent(ev, JSON.parse(data));
       }
     }
   } catch (e) {

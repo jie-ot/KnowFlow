@@ -67,6 +67,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** 弹出“内容将发送给服务商”的确认框，返回用户是否同意 */
+export const useAiConsent = () => useContext(ConsentCtx);
+
 /** 运行一个 AI 任务：处理未配置、需要同意、流式输出、取消。 */
 export function useAiTask() {
   const askConsent = useContext(ConsentCtx);

@@ -23,7 +23,9 @@ router = APIRouter(prefix="/api", tags=["其他"])
 
 @router.get("/health")
 def health() -> dict:
-    return {"ok": True, "version": config.APP_VERSION}
+    from ..logic.ocr import available
+
+    return {"ok": True, "version": config.APP_VERSION, "ocr": available()}
 
 
 @router.get("/search")

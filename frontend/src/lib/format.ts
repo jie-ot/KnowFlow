@@ -70,3 +70,19 @@ export const MATERIAL_STATUS: Record<string, { label: string; tone: string }> = 
   partial: { label: "部分可用", tone: "warn" },
   failed: { label: "解析失败", tone: "bad" },
 };
+
+/* ---------- 日期（一律用本地日期字符串 YYYY-MM-DD，避免时区换算） ---------- */
+export const ymd = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+export const parseDay = (s: string) => {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d);
+};
+export const shiftDay = (s: string, days: number) => {
+  const d = parseDay(s);
+  d.setDate(d.getDate() + days);
+  return ymd(d);
+};
+export const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
+/** 周一 = 0 */
+export const weekdayIndex = (d: Date) => (d.getDay() + 6) % 7;

@@ -65,7 +65,7 @@ function Session({ courseId }: { courseId: string | null }) {
       setFlipped(false);
       setIndex((i) => i + 1);
       globalMutate("/api/courses");
-      globalMutate("/api/stats?days=30");
+      globalMutate("/api/stats?days=365");
     } catch (e) {
       toast((e as ApiError).message, "bad");
     }

@@ -9,7 +9,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" suppressHydrationWarning>
+      <head>
+        {/* 在页面绘制前应用主题，避免闪一下浅色 */}
+        <script dangerouslySetInnerHTML={{ __html: `try{var t=localStorage.getItem("kf-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}` }} />
+      </head>
       <body>
         <Shell>{children}</Shell>
       </body>

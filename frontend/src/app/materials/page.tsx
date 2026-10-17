@@ -14,6 +14,7 @@ export default function MaterialsPage() {
   const [drag, setDrag] = useState(false);
   const [uploading, setUploading] = useState(false);
   const { data: courses } = useSWR<Course[]>("/api/courses", fetcher);
+  const { data: health } = useSWR<{ ocr: boolean }>("/api/health", fetcher);
   const target = course || courses?.[0]?.id || "";
   const key = `/api/materials${course ? `?course_id=${course}` : ""}`;
   const { data: items, mutate } = useSWR<Material[]>(key, fetcher, {
@@ -65,6 +66,11 @@ export default function MaterialsPage() {
         <span className="text-[12px] text-muted">
           上传到「{courseMap[target]?.name || "—"}」。PDF、PPTX、DOCX、TXT、MD、代码、图片；一次最多 5 个，每个不超过 20 MB
         </span>
+        {health && (
+          <span className="text-[12px] text-faint">
+            {health.ocr ? "课件截图、板书照片和扫描版 PDF 会自动识别文字（在本机识别，不联网）" : "没有安装文字识别组件，图片里的文字需要手动补充；重新运行 python run.py 会自动安装"}
+          </span>
+        )}
       </label>
 
       <div className="border-y border-rule divide-y divide-rule">

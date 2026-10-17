@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Check, Flag, Plus, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowLeft, CalendarDays, Check, Flag, List, Plus, Sparkles, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
@@ -9,6 +9,8 @@ import { api, ApiError, Course, fetcher, NoteSummary, Plan, Problem, Task } from
 import { dayLabel, TASK_KINDS } from "@/lib/format";
 import { useAiTask } from "@/components/ai";
 import { AiStatusLine, Warnings } from "@/components/AiSheets";
+import { PlanCalendar } from "@/components/PlanCalendar";
+import { FocusButton } from "@/components/Focus";
 import { Dot, Empty, Modal, PageHeader, useConfirm, useToast } from "@/components/ui";
 
 export default function PlansPage() {
@@ -26,12 +28,29 @@ function Plans() {
 
 function PlanList() {
   const { data: plans, mutate } = useSWR<Plan[]>("/api/plans", fetcher);
-  const [creating, setCreating] = useState(false);
+  const params = useSearchParams();
+  const [creating, setCreating] = useState(params.get("new") === "1");
   const router = useRouter();
+  const [view, setView] = useState<"list" | "calendar">(() => {
+    if (params.get("view") === "calendar") return "calendar";
+    try { return localStorage.getItem("kf-plan-view") === "calendar" ? "calendar" : "list"; } catch { return "list"; }
+  });
+  const changeView = (v: "list" | "calendar") => {
+    setView(v);
+    try { localStorage.setItem("kf-plan-view", v); } catch {}
+    router.replace(v === "calendar" ? "/plans?view=calendar" : "/plans");
+  };
   return (
-    <div className="max-w-[880px] mx-auto px-10 py-12">
+    <div className={`${view === "calendar" ? "max-w-[1240px]" : "max-w-[880px]"} mx-auto px-10 py-12`}>
       <PageHeader title="计划" sub="你定目标和时间，AI 帮你拆任务；日期和进度始终由你决定。"
-        actions={<button className="btn btn-primary" onClick={() => setCreating(true)}><Plus size={14} />新建计划</button>} />
+        actions={<>
+          <div className="seg">
+            <button data-on={view === "list"} onClick={() => changeView("list")} className="flex items-center gap-1"><List size={13} />列表</button>
+            <button data-on={view === "calendar"} onClick={() => changeView("calendar")} className="flex items-center gap-1"><CalendarDays size={13} />月历</button>
+          </div>
+          <button className="btn btn-primary" onClick={() => setCreating(true)}><Plus size={14} />新建计划</button>
+        </>} />
+      {view === "calendar" ? <PlanCalendar /> : <>
       <div className="border-y border-rule divide-y divide-rule">
         {plans?.map((p) => {
           const pct = p.task_total ? Math.round((p.task_done / p.task_total) * 100) : 0;
@@ -55,6 +74,7 @@ function PlanList() {
         })}
       </div>
       {plans?.length === 0 && <Empty title="还没有计划">比如“两周后期中考试，每天 90 分钟”，建一个试试。</Empty>}
+      </>}
       <PlanDialog open={creating} onClose={() => setCreating(false)} onSaved={(p) => { mutate(); router.push(`/plans?id=${p.id}`); }} />
     </div>
   );
@@ -125,6 +145,8 @@ function PlanDetail({ id }: { id: string }) {
   const [editing, setEditing] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
+  const [newDue, setNewDue] = useState<string | null>(null);
+  const [newMin, setNewMin] = useState("30");
   const confirm = useConfirm();
   const router = useRouter();
   const today = new Date(Date.now() - 4 * 3600e3).toLocaleDateString("sv-SE");
@@ -146,9 +168,13 @@ function PlanDetail({ id }: { id: string }) {
   };
   const addTask = async () => {
     if (!newTitle.trim()) return;
-    await api(`/api/plans/${id}/tasks`, { method: "POST", json: { title: newTitle, kind: "learn", due_date: today, estimated_minutes: 30 } });
+    await api(`/api/plans/${id}/tasks`, {
+      method: "POST",
+      json: { title: newTitle.trim(), kind: "learn", due_date: newDue ?? today, estimated_minutes: newMin ? Number(newMin) : null },
+    });
     setNewTitle("");
     mutate();
+    globalMutate("/api/tasks/today");
   };
   const remove = async () => {
     if (!(await confirm({ title: "删除这个计划？", body: "计划里的任务会一起删除。", confirm: "删除", danger: true }))) return;
@@ -189,9 +215,18 @@ function PlanDetail({ id }: { id: string }) {
           </section>
         ))}
         {plan.tasks?.length === 0 && <Empty title="计划里还没有任务">点“AI 拆任务”，或在下面直接添加。</Empty>}
-        <div className="flex gap-2">
-          <input className="input" placeholder="添加任务，回车保存（默认今天、30 分钟，可再改）" value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addTask()} />
+        <div className="flex gap-2 items-center rounded-xl border border-rule p-1.5 focus-within:border-accent focus-within:shadow-[0_0_0_3px_var(--accent-soft)] transition-shadow">
+          <Plus size={15} className="text-faint ml-1.5 shrink-0" />
+          <input className="flex-1 min-w-0 h-8 bg-transparent outline-none text-[14px] placeholder:text-faint" placeholder="添加任务，回车保存" value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && addTask()} />
+          <input type="date" className="h-8 px-2 rounded-lg bg-hover text-[12.5px] text-muted outline-none" value={newDue ?? today}
+            onChange={(e) => setNewDue(e.target.value || null)} aria-label="日期" />
+          <span className="flex items-center h-8 rounded-lg bg-hover pr-2 text-[12.5px] text-muted">
+            <input type="number" min={1} max={1440} className="w-12 h-8 bg-transparent text-right outline-none" value={newMin}
+              onChange={(e) => setNewMin(e.target.value)} aria-label="预计分钟" />
+            分钟
+          </span>
+          <button className="btn btn-primary h-8" disabled={!newTitle.trim()} onClick={addTask}>添加</button>
         </div>
       </div>
       <PlanDialog open={editing} plan={plan} onClose={() => setEditing(false)} onSaved={() => mutate()} />
@@ -202,6 +237,13 @@ function PlanDetail({ id }: { id: string }) {
 
 function TaskRow({ t, onPatch, onDelete }: { t: Task; onPatch: (j: Record<string, unknown>) => void; onDelete: () => void }) {
   const done = t.status === "done";
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(t.title);
+  const commit = () => {
+    setEditing(false);
+    if (draft.trim() && draft.trim() !== t.title) onPatch({ title: draft.trim() });
+    else setDraft(t.title);
+  };
   return (
     <li className="group flex items-center gap-3 py-3">
       <button onClick={() => onPatch({ status: done ? "todo" : "done" })} aria-label={done ? "标为未完成" : "标为完成"}
@@ -209,14 +251,26 @@ function TaskRow({ t, onPatch, onDelete }: { t: Task; onPatch: (j: Record<string
         {done && <Check size={12} strokeWidth={3} />}
       </button>
       <div className="flex-1 min-w-0">
-        <p className={`text-[14px] ${done ? "line-through text-faint" : ""}`}>{t.title}</p>
+        {editing ? (
+          <input autoFocus className="w-full bg-transparent outline-none text-[14px] border-b border-accent" value={draft} maxLength={200}
+            onChange={(e) => setDraft(e.target.value)} onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) commit();
+              if (e.key === "Escape") { setDraft(t.title); setEditing(false); }
+            }} />
+        ) : (
+          <p className={`text-[14px] cursor-text ${done ? "line-through text-faint" : ""}`} title="双击修改"
+            onDoubleClick={() => { setDraft(t.title); setEditing(true); }}>{t.title}</p>
+        )}
         <p className="text-[12px] text-muted mt-0.5 flex items-center gap-2">
           <span>{TASK_KINDS[t.kind]}</span>
           {t.status === "in_progress" && <span className="text-accent">进行中</span>}
           {t.needs_review && <span className="text-warn">需加强</span>}
+          {!!t.actual_minutes && <span className="text-accent">实际用时 {t.actual_minutes} 分钟</span>}
         </p>
       </div>
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <FocusButton task={t} />
         {!done && <button className="btn h-7 text-[12px]" onClick={() => onPatch({ status: t.status === "in_progress" ? "todo" : "in_progress" })}>{t.status === "in_progress" ? "暂停" : "开始"}</button>}
         <button className="btn btn-icon h-7" title="标记需加强" onClick={() => onPatch({ needs_review: !t.needs_review })}
           style={t.needs_review ? { color: "var(--warn)" } : undefined}><Flag size={13} /></button>
@@ -224,7 +278,13 @@ function TaskRow({ t, onPatch, onDelete }: { t: Task; onPatch: (j: Record<string
           aria-label="改期" onChange={(e) => onPatch({ due_date: e.target.value || null })} />
         <button className="btn btn-icon h-7 text-muted" onClick={onDelete} aria-label="删除任务"><X size={14} /></button>
       </div>
-      {t.estimated_minutes && <span className="text-[12px] text-muted tabular-nums w-14 text-right">{t.estimated_minutes} 分钟</span>}
+      <select className="h-7 rounded-md bg-transparent text-[12px] text-muted tabular-nums text-right outline-none hover:bg-hover cursor-pointer"
+        value={t.estimated_minutes ?? ""} aria-label="预计分钟"
+        onChange={(e) => onPatch({ estimated_minutes: e.target.value ? Number(e.target.value) : null })}>
+        <option value="">不估时</option>
+        {[...new Set([10, 15, 20, 30, 45, 60, 90, 120, ...(t.estimated_minutes ? [t.estimated_minutes] : [])])].sort((a, b) => a - b)
+          .map((m) => <option key={m} value={m}>{m} 分钟</option>)}
+      </select>
     </li>
   );
 }

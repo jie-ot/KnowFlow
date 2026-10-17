@@ -13,29 +13,58 @@ const appHref = (href: string) => {
   return m ? `/materials/view?id=${m[1]}${m[2] ? `&unit=${m[2]}` : ""}` : href;
 };
 
-/** 渲染 Markdown：GFM 表格 / 脚注、LaTeX 公式、代码高亮。原始 HTML 不渲染。 */
-export function Markdown({ text, className = "" }: { text: string; className?: string }) {
+const CODE = /```[\s\S]*?```|`[^`\n]*`/g;
+const WIKI = /\[\[([^[\]\n|]{1,100})(?:\|([^[\]\n]{0,100}))?\]\]/g;
+const WIKI_PREFIX = "/notes/?wiki=";
+
+/** 把 [[标题]] / [[标题|文字]] 转成普通链接；代码里的不动 */
+function wikify(text: string) {
+  const conv = (s: string) =>
+    s.replace(WIKI, (_, title: string, label?: string) =>
+      `[${(label || title).trim()}](${WIKI_PREFIX}${encodeURIComponent(title.trim())})`);
+  let out = "";
+  let last = 0;
+  for (const m of text.matchAll(CODE)) {
+    out += conv(text.slice(last, m.index)) + m[0];
+    last = (m.index ?? 0) + m[0].length;
+  }
+  return out + conv(text.slice(last));
+}
+
+/**
+ * 渲染 Markdown：GFM 表格 / 脚注、LaTeX 公式、代码高亮、[[双链]]。原始 HTML 不渲染。
+ * known：已存在笔记的小写标题，用来区分“已有笔记”和“还没建的笔记”。
+ */
+export function Markdown({ text, className = "", known, noCreate }: {
+  text: string; className?: string; known?: Set<string>;
+  /** 为 true 时，指向不存在笔记的 [[链接]] 只显示文字，点击不会新建（用于 AI 助手的回答） */
+  noCreate?: boolean;
+}) {
   return (
     <div className={`prose-kf ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }], [rehypeHighlight, { detect: false }]]}
         components={{
-          a: ({ href = "", children, ...rest }) =>
-            href.startsWith("/") ? (
-              <Link href={appHref(href)}>{children}</Link>
-            ) : href.startsWith("#") ? (
-              <a href={href} {...rest}>
-                {children}
-              </a>
-            ) : (
-              <a href={href} target="_blank" rel="noreferrer">
-                {children}
-              </a>
-            ),
+          a: ({ href = "", children, ...rest }) => {
+            if (href.startsWith(WIKI_PREFIX)) {
+              const title = decodeURIComponent(href.slice(WIKI_PREFIX.length));
+              const missing = known ? !known.has(title.toLowerCase()) : false;
+              if (missing && noCreate) return <span>{children}</span>;
+              return (
+                <Link href={`/notes?wiki=${encodeURIComponent(title)}`} className={missing ? "wikilink wikilink-missing" : "wikilink"}
+                  title={missing ? `还没有「${title}」这篇笔记，点击新建` : `打开「${title}」`}>
+                  {children}
+                </Link>
+              );
+            }
+            if (href.startsWith("/")) return <Link href={appHref(href)}>{children}</Link>;
+            if (href.startsWith("#")) return <a href={href} {...rest}>{children}</a>;
+            return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
+          },
         }}
       >
-        {text}
+        {text.includes("[[") ? wikify(text) : text}
       </ReactMarkdown>
     </div>
   );

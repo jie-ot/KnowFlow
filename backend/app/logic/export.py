@@ -20,6 +20,8 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import TextLexer, get_lexer_by_name
 from pygments.util import ClassNotFound
 
+from .links import map_links
+
 _FORMATTER = HtmlFormatter(cssclass="hl", style="friendly")
 
 
@@ -63,7 +65,7 @@ def _heading_close(self, tokens, idx, options, env) -> str:  # type: ignore[no-u
 _APP_LINK = re.compile(r"\[([^\]]+)\]\((/[^)]*)\)")
 
 
-def render_markdown(text: str, prefix: str) -> str:
+def render_markdown(text: str, prefix: str, anchors: dict[str, str] | None = None) -> str:
     md = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
     md.enable("table").enable("strikethrough")
     md.use(dollarmath_plugin, allow_space=True, double_inline=True, renderer=_math)
@@ -73,6 +75,10 @@ def render_markdown(text: str, prefix: str) -> str:
     md.add_render_rule("heading_close", _heading_close)
     # 应用内链接（如资料定位）在离线文件里无法打开，只保留文字
     cleaned = _APP_LINK.sub(r"\1", text or "")
+    # [[双链]]：导出的文件里有这篇笔记就跳到它，没有就只保留文字
+    anchors = anchors or {}
+    cleaned = map_links(cleaned, lambda title, label: f"[{label}](#{anchors[title.lower()]})"
+                        if title.lower() in anchors else label)
     return md.render(cleaned, {"docId": prefix})
 
 
@@ -134,12 +140,15 @@ def build_html(
 
     toc_items = []
     sections = []
+    anchors = {}
+    for index, note in enumerate(notes, start=1):
+        anchors.setdefault(note["title"].strip().lower(), f"n{index}")
     for index, note in enumerate(notes, start=1):
         anchor = f"n{index}"
         course = courses.get(note["course_id"], {"name": "未分类"})
         toc_items.append(f'<li><a href="#{anchor}">{esc(note["title"])}</a><span>{esc(course["name"])}</span></li>')
         tags = "".join(f"<span class=\"tag\">{esc(t)}</span>" for t in note.get("tags") or [])
-        body = render_markdown(note.get("content") or "", anchor)
+        body = render_markdown(note.get("content") or "", anchor, anchors)
         sections.append(
             f'<article class="note" id="{anchor}">'
             f'<header><p class="course">{esc(course["name"])}</p><h2>{esc(note["title"])}</h2>'

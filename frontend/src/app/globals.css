@@ -24,8 +24,31 @@
   color-scheme: light;
 }
 
+:root[data-theme="dark"] {
+  --paper: #1d1c1a;
+  --canvas: #242320;
+  --ink: #ebe9e4;
+  --muted: #a19d95;
+  --faint: #75716a;
+  --rule: #34322e;
+  --hover: #2d2b28;
+  --accent: #6fb39c;
+  --accent-ink: #12221d;
+  --accent-soft: #23362f;
+  --mark: #5c4c1c;
+  --warn: #dfac58;
+  --warn-soft: #3a3020;
+  --bad: #e08178;
+  --bad-soft: #3b2522;
+  --card-shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 16px 36px -14px rgba(0, 0, 0, 0.7);
+  --overlay: rgba(0, 0, 0, 0.5);
+  --code-bg: #262522;
+  color-scheme: dark;
+}
+
+/* 跟随系统：没有手动选浅色时，系统是深色就用深色 */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper: #1d1c1a;
     --canvas: #242320;
     --ink: #ebe9e4;
@@ -80,10 +103,13 @@ body {
   background: var(--accent-soft);
 }
 
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 6px;
+/* 放在 base 层，带 outline-none 的输入框（编辑区、标题）不会被套上焦点框 */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
 }
 
 @layer components {
@@ -418,23 +444,59 @@ body {
 .hljs-params {
   color: var(--ink);
 }
+:root[data-theme="dark"] .hljs-keyword,
+:root[data-theme="dark"] .hljs-selector-tag,
+:root[data-theme="dark"] .hljs-built_in,
+:root[data-theme="dark"] .hljs-meta {
+  color: #c39be0;
+}
+:root[data-theme="dark"] .hljs-string,
+:root[data-theme="dark"] .hljs-attr {
+  color: #8cc9a5;
+}
+:root[data-theme="dark"] .hljs-number,
+:root[data-theme="dark"] .hljs-literal {
+  color: #e6a96b;
+}
+:root[data-theme="dark"] .hljs-title,
+:root[data-theme="dark"] .hljs-section {
+  color: #8fb2e6;
+}
 @media (prefers-color-scheme: dark) {
-  .hljs-keyword,
-  .hljs-selector-tag,
-  .hljs-built_in,
-  .hljs-meta {
+  :root:not([data-theme="light"]) .hljs-keyword,
+  :root:not([data-theme="light"]) .hljs-selector-tag,
+  :root:not([data-theme="light"]) .hljs-built_in,
+  :root:not([data-theme="light"]) .hljs-meta {
     color: #c39be0;
   }
-  .hljs-string,
-  .hljs-attr {
+  :root:not([data-theme="light"]) .hljs-string,
+  :root:not([data-theme="light"]) .hljs-attr {
     color: #8cc9a5;
   }
-  .hljs-number,
-  .hljs-literal {
+  :root:not([data-theme="light"]) .hljs-number,
+  :root:not([data-theme="light"]) .hljs-literal {
     color: #e6a96b;
   }
-  .hljs-title,
-  .hljs-section {
+  :root:not([data-theme="light"]) .hljs-title,
+  :root:not([data-theme="light"]) .hljs-section {
     color: #8fb2e6;
   }
+}
+
+/* 双链 */
+.prose-kf a.wikilink {
+  color: var(--accent);
+  text-decoration: none;
+  background: var(--accent-soft);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.prose-kf a.wikilink:hover {
+  text-decoration: underline;
+}
+.prose-kf a.wikilink-missing {
+  color: var(--muted);
+  background: transparent;
+  border-bottom: 1px dashed var(--faint);
+  border-radius: 0;
 }

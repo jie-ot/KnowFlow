@@ -1,18 +1,19 @@
 "use client";
 
 import {
-  BookOpen, ChevronDown, Download, FileDown, FileUp, History, Layers, MoreHorizontal, Pencil, Plus, Search,
-  Sparkles, Trash2, X,
+  BookOpen, ChevronDown, Download, FileDown, FileUp, History, Layers, Link2, MoreHorizontal, Network, Pencil, Plus,
+  Search, Sparkles, Trash2, X,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
-import { api, ApiError, Course, download, fetcher, Note, NoteSummary, Plan, Revision } from "@/lib/api";
+import { api, ApiError, Course, download, fetcher, Note, NoteLinks, NoteSummary, Plan, Revision } from "@/lib/api";
 import { relTime, REVISION_REASON } from "@/lib/format";
 import { useAiTask } from "@/components/ai";
 import { CompareSheet, ExtractSheet } from "@/components/AiSheets";
 import { Markdown } from "@/components/Markdown";
+import { EditorHandle, MarkdownEditor, TitleOption } from "@/components/MarkdownEditor";
 import { CourseDialog } from "@/components/Shell";
 import { Dot, Empty, Modal, useConfirm, useToast } from "@/components/ui";
 
@@ -30,7 +31,9 @@ function Notes() {
   const courseId = params.get("course");
   const noteId = params.get("id");
   const tag = params.get("tag");
+  const wiki = params.get("wiki");
   const [filter, setFilter] = useState("");
+  const [fresh, setFresh] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [editCourse, setEditCourse] = useState(false);
   const toast = useToast();
@@ -40,6 +43,11 @@ function Notes() {
   const { data: courses, mutate: mutateCourses } = useSWR<Course[]>("/api/courses", fetcher);
   const listKey = `/api/notes${courseId ? `?course_id=${courseId}` : ""}`;
   const { data: notes, mutate: mutateList } = useSWR<NoteSummary[]>(listKey, fetcher);
+  const { data: allNotes, mutate: mutateAll } = useSWR<NoteSummary[]>("/api/notes", fetcher);
+  const known = useMemo(() => new Set((allNotes || []).map((n) => n.title.trim().toLowerCase())), [allNotes]);
+  const titles = useMemo<TitleOption[]>(() => (allNotes || []).map((n) => ({ id: n.id, title: n.title })), [allNotes]);
+  const lastNote = useRef<string | null>(null);
+  if (noteId) lastNote.current = noteId;
   const courseMap = useMemo(() => Object.fromEntries((courses || []).map((c) => [c.id, c])), [courses]);
   const course = courseId ? courseMap[courseId] : null;
 
@@ -55,6 +63,9 @@ function Notes() {
 
   const setParam = (key: string, value: string | null) => {
     const p = new URLSearchParams(params.toString());
+    p.delete("new");
+    p.delete("wiki");
+    p.delete("edit");
     if (value) p.set(key, value);
     else p.delete(key);
     router.replace(`/notes?${p.toString()}`);
@@ -67,10 +78,49 @@ function Notes() {
       return;
     }
     const n = await api<Note>("/api/notes", { method: "POST", json: { course_id: target, title: "未命名笔记" } });
-    await mutateList();
+    await Promise.all([mutateList(), mutateAll()]);
     globalMutate("/api/courses");
+    setFresh(n.id);
     setParam("id", n.id);
   };
+
+  // ⌘K 里的“新建笔记”
+  const newBusy = useRef(false);
+  useEffect(() => {
+    if (params.get("new") !== "1" || !courses || newBusy.current) return;
+    newBusy.current = true;
+    create().finally(() => { newBusy.current = false; });
+  }, [params, courses]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 点击 [[双链]]：打开同名笔记；没有就在当前学科里新建一篇
+  const wikiBusy = useRef(false);
+  useEffect(() => {
+    if (!wiki || !allNotes || !courses || wikiBusy.current) return;
+    const go = (n: { id: string; course_id: string }) =>
+      router.replace(`/notes?id=${n.id}${courseId ? `&course=${n.course_id}` : ""}`);
+    const hit = allNotes.find((n) => n.title.trim().toLowerCase() === wiki.trim().toLowerCase());
+    if (hit) return go(hit);
+    const target = allNotes.find((n) => n.id === lastNote.current)?.course_id || courseId || courses[0]?.id;
+    if (!target) return;
+    wikiBusy.current = true;
+    api<Note>("/api/notes", { method: "POST", json: { course_id: target, title: wiki.trim().slice(0, 100) } })
+      .then(async (n) => {
+        await Promise.all([mutateList(), mutateAll()]);
+        globalMutate("/api/courses");
+        toast(`已新建笔记「${n.title}」`);
+        go(n);
+      })
+      .catch((e) => toast((e as Error).message, "bad"))
+      .finally(() => { wikiBusy.current = false; });
+  }, [wiki, allNotes, courses]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "n") { e.preventDefault(); create(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const importFiles = async (files: FileList | null) => {
     const target = courseId || courses?.[0]?.id;
@@ -116,7 +166,8 @@ function Notes() {
                 { label: "删除学科", icon: Trash2, onClick: removeCourse, danger: true },
               ]} />
             )}
-            <button className="btn btn-icon" onClick={create} aria-label="新建笔记" title="新建笔记"><Plus size={17} /></button>
+            <Link href={courseId ? `/graph?course=${courseId}` : "/graph"} className="btn btn-icon text-muted" aria-label="知识图谱" title="知识图谱"><Network size={16} /></Link>
+            <button className="btn btn-icon" onClick={create} aria-label="新建笔记" title="新建笔记（⌘⇧N）"><Plus size={17} /></button>
           </div>
           <div className="relative">
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
@@ -164,14 +215,17 @@ function Notes() {
 
       <section className="flex-1 min-w-0">
         {noteId ? (
-          <Editor key={noteId} id={noteId} courses={courses || []}
-            onChanged={() => { mutateList(); globalMutate("/api/courses"); }}
-            onDeleted={() => { setParam("id", null); mutateList(); globalMutate("/api/courses"); }} />
+          <Editor key={noteId} id={noteId} courses={courses || []} known={known} titles={titles} fresh={fresh === noteId}
+            startEdit={params.get("edit") === "1"}
+            onChanged={() => { mutateList(); mutateAll(); globalMutate("/api/courses"); }}
+            onDeleted={() => { setParam("id", null); mutateList(); mutateAll(); globalMutate("/api/courses"); }} />
         ) : (
           <div className="h-full grid place-items-center">
-            <Empty icon={<BookOpen size={28} strokeWidth={1.5} />} title="选择一篇笔记，或新建一篇">
-              笔记支持 Markdown、LaTeX 公式（$…$）和代码块。按 ⌘K 可以全局搜索。
-            </Empty>
+            {wiki ? <p className="text-[14px] text-muted">正在打开「{wiki}」…</p> : (
+              <Empty icon={<BookOpen size={28} strokeWidth={1.5} />} title="选择一篇笔记，或新建一篇">
+                笔记支持 Markdown、LaTeX 公式（$…$）和代码块；输入 [[ 可以链接到另一篇笔记。按 ⌘K 可以全局搜索。
+              </Empty>
+            )}
           </div>
         )}
       </section>
@@ -212,10 +266,14 @@ function Menu({ items, label = "更多" }: { items: MenuItem[]; label?: string }
 
 type Mode = "read" | "split" | "edit";
 
-function Editor({ id, courses, onChanged, onDeleted }: {
-  id: string; courses: Course[]; onChanged: () => void; onDeleted: () => void;
+function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDeleted }: {
+  id: string; courses: Course[]; known: Set<string>; titles: TitleOption[]; fresh: boolean; startEdit?: boolean;
+  onChanged: () => void; onDeleted: () => void;
 }) {
   const { data: note, mutate } = useSWR<Note>(`/api/notes/${id}`, fetcher, { revalidateOnFocus: false });
+  const { data: links, mutate: mutateLinks } = useSWR<NoteLinks>(`/api/notes/${id}/links`, fetcher);
+  const editorRef = useRef<EditorHandle>(null);
+  const pending = useRef<Record<string, unknown> | null>(null);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [tags, setTags] = useState<string[]>([]);
@@ -241,20 +299,24 @@ function Editor({ id, courses, onChanged, onDeleted }: {
       if (!loaded.current) {
         let saved: Mode | null = null;
         try { saved = localStorage.getItem("kf-mode") as Mode | null; } catch {}
-        setMode(note.content.trim() ? saved || "read" : "edit");
+        setMode(startEdit ? (saved === "split" ? "split" : "edit") : note.content.trim() ? saved || "read" : "edit");
+        if (startEdit) setTimeout(() => editorRef.current?.focus(), 80);
       }
       loaded.current = true;
     }
   }, [note]);
 
   const save = useCallback(async (fields: Record<string, unknown>) => {
+    pending.current = null;
     setSaveState("saving");
     try {
-      const n = await api<Note>(`/api/notes/${id}`, { method: "PATCH", json: { ...fields, base_version: version.current } });
+      const n = await api<Note & { renamed_links?: number }>(`/api/notes/${id}`, { method: "PATCH", json: { ...fields, base_version: version.current } });
       version.current = n.version;
       mutate(n, { revalidate: false });
       setSaveState("saved");
       onChanged();
+      mutateLinks();
+      if (n.renamed_links) toast(`已同步改好 ${n.renamed_links} 处指向这篇笔记的链接`);
     } catch (e) {
       setSaveState("error");
       toast((e as ApiError).message, "bad");
@@ -266,14 +328,39 @@ function Editor({ id, courses, onChanged, onDeleted }: {
     if (!note || !loaded.current) return;
     if (title === note.title && content === note.content) return;
     setSaveState("dirty");
+    pending.current = { title, content };
     const t = setTimeout(() => save({ title, content }), 800);
     return () => clearTimeout(t);
   }, [title, content]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 切到别的笔记（或点了双链）时，把还没来得及自动保存的改动存掉
+  useEffect(() => () => {
+    if (pending.current) {
+      api(`/api/notes/${id}`, { method: "PATCH", json: { ...pending.current, base_version: version.current } })
+        .then(onChanged).catch(() => {});
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const lastEdit = useRef<Mode>("split");
   const changeMode = (m: Mode) => {
     setMode(m);
+    if (m !== "read") lastEdit.current = m;
     try { localStorage.setItem("kf-mode", m); } catch {}
   };
+
+  // ⌘E：阅读 ⇄ 编辑
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        const next = mode === "read" ? lastEdit.current : "read";
+        changeMode(next);
+        if (next !== "read") setTimeout(() => editorRef.current?.focus(), 30);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const commitTags = (next: string[]) => {
     setTags(next);
@@ -305,6 +392,8 @@ function Editor({ id, courses, onChanged, onDeleted }: {
   if (!note) return <div className="p-10 text-muted text-[14px]">正在打开…</div>;
   const chars = content.replace(/\s/g, "").length;
   const busy = ai.state.running;
+  const colors = Object.fromEntries(courses.map((c) => [c.id, c.color]));
+  const linksPanel = <LinksPanel links={links} title={title} colors={colors} />;
 
   return (
     <div className="h-full flex flex-col">
@@ -316,7 +405,7 @@ function Editor({ id, courses, onChanged, onDeleted }: {
         </select>
         <span className="flex-1" />
         <div className="seg">
-          <button data-on={mode === "read"} onClick={() => changeMode("read")}>阅读</button>
+          <button data-on={mode === "read"} onClick={() => changeMode("read")} title="⌘E 切换阅读 / 编辑">阅读</button>
           <button data-on={mode === "split"} onClick={() => changeMode("split")}>分栏</button>
           <button data-on={mode === "edit"} onClick={() => changeMode("edit")}>编辑</button>
         </div>
@@ -341,14 +430,11 @@ function Editor({ id, courses, onChanged, onDeleted }: {
           <div className={`${mode === "split" ? "w-1/2 border-r border-rule" : "w-full"} overflow-y-auto`}>
             <div className="max-w-[760px] mx-auto px-10 py-8">
               <TitleAndTags title={title} setTitle={setTitle} tags={tags} tagInput={tagInput}
-                setTagInput={setTagInput} commitTags={commitTags} />
-              <textarea value={content} onChange={(e) => setContent(e.target.value)} readOnly={busy}
-                placeholder={"用 Markdown 写笔记。\n\n## 小标题\n- 列表\n公式：$E = mc^2$\n\n```c\nint main() {}\n```"}
-                className="w-full min-h-[60vh] resize-none bg-transparent outline-none text-[14.5px] leading-[1.85] font-mono placeholder:text-faint"
-                style={{ fieldSizing: "content" } as React.CSSProperties}
-                onKeyDown={(e) => {
-                  if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); save({ title, content }); }
-                }} />
+                setTagInput={setTagInput} commitTags={commitTags} fresh={fresh} onEnter={() => editorRef.current?.focus()} />
+              <MarkdownEditor ref={editorRef} value={content} onChange={setContent} readOnly={busy} titles={titles.filter((t) => t.id !== id)}
+                onSave={() => save({ title, content })}
+                placeholder={"用 Markdown 写笔记。\n\n## 小标题\n- 列表（回车自动续写，Tab 缩进）\n公式：$E = mc^2$\n输入 [[ 链接到另一篇笔记\n\n```c\nint main() {}\n```"} />
+              {mode === "edit" && linksPanel}
             </div>
           </div>
         )}
@@ -362,7 +448,7 @@ function Editor({ id, courses, onChanged, onDeleted }: {
                 <h1 className="font-serif text-[28px] leading-tight mb-6">{title}</h1>
               )}
               {content.trim() ? (
-                <div onDoubleClick={() => mode === "read" && changeMode("edit")}><Markdown text={content} /></div>
+                <div onDoubleClick={() => mode === "read" && changeMode("edit")}><Markdown text={content} known={known} /></div>
               ) : (
                 <button className="text-[14px] text-faint" onClick={() => changeMode("edit")}>空白笔记，点这里开始写</button>
               )}
@@ -374,6 +460,7 @@ function Editor({ id, courses, onChanged, onDeleted }: {
                   <Layers size={14} />由这篇笔记生成的 {note.card_count} 张卡片
                 </Link>
               )}
+              {linksPanel}
             </article>
           </div>
         )}
@@ -382,6 +469,9 @@ function Editor({ id, courses, onChanged, onDeleted }: {
       <div className="h-8 px-6 flex items-center gap-4 border-t border-rule text-[11.5px] text-faint shrink-0">
         <span>{{ saved: "已保存", saving: "保存中…", dirty: "有改动", error: "保存失败，内容仍在编辑区" }[saveState]}</span>
         <span className="tabular-nums">{chars} 字</span>
+        {links && links.backlinks.length > 0 && <span className="flex items-center gap-1"><Link2 size={11} />{links.backlinks.length} 篇笔记链接到这里</span>}
+        <span className="flex-1" />
+        <span className="hidden lg:inline">⌘E 阅读/编辑 · ⌘B 加粗 · [[ 链接笔记</span>
         {busy && <span className="text-accent">AI 生成期间编辑区只读</span>}
       </div>
 
@@ -395,7 +485,7 @@ function Editor({ id, courses, onChanged, onDeleted }: {
         <ExtractSheet open state={ai.state}
           onClose={() => { ai.reset(); setSheet(null); }}
           onRetry={() => ai.run(lastRun)}
-          onAccepted={(n) => { ai.reset(); setSheet(null); mutate(); onChanged(); globalMutate("/api/stats?days=30"); toast(`已加入 ${n} 张卡片，今天就可以复习`); }} />
+          onAccepted={(n) => { ai.reset(); setSheet(null); mutate(); onChanged(); globalMutate("/api/stats?days=365"); toast(`已加入 ${n} 张卡片，今天就可以复习`); }} />
       )}
       <HistoryDrawer open={history} noteId={id} onClose={() => setHistory(false)}
         onRestored={async () => { const n = await mutate(); if (n) { setContent(n.content); setTitle(n.title); version.current = n.version; } onChanged(); }} />
@@ -403,13 +493,18 @@ function Editor({ id, courses, onChanged, onDeleted }: {
   );
 }
 
-function TitleAndTags({ title, setTitle, tags, tagInput, setTagInput, commitTags }: {
+function TitleAndTags({ title, setTitle, tags, tagInput, setTagInput, commitTags, fresh, onEnter }: {
   title: string; setTitle: (v: string) => void; tags: string[]; tagInput: string;
-  setTagInput: (v: string) => void; commitTags: (t: string[]) => void;
+  setTagInput: (v: string) => void; commitTags: (t: string[]) => void; fresh?: boolean; onEnter?: () => void;
 }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (fresh) { ref.current?.focus(); ref.current?.select(); }
+  }, [fresh]);
   return (
     <div className="mb-7">
-      <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} aria-label="标题"
+      <input ref={ref} value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} aria-label="标题"
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && onEnter) { e.preventDefault(); onEnter(); } }}
         className="w-full bg-transparent outline-none font-serif text-[30px] leading-tight placeholder:text-faint" placeholder="标题" />
       <div className="flex flex-wrap items-center gap-1.5 mt-3">
         {tags.map((t) => (
@@ -550,3 +645,39 @@ function ExportDialog({ open, onClose, notes, courseMap }: {
   );
 }
 
+
+function LinksPanel({ links, title, colors }: { links?: NoteLinks; title: string; colors: Record<string, string> }) {
+  if (!links) return null;
+  const missing = links.outgoing.filter((o) => !o.note_id);
+  const clean = (t: string) => t.replace(/\[\[([^\]|]+)(\|[^\]]*)?\]\]/g, "$1");
+  return (
+    <section className="mt-12 pt-5 border-t border-rule">
+      <h3 className="section-title flex items-center gap-1.5"><Link2 size={13} />反向链接 {links.backlinks.length > 0 && <span className="text-faint font-normal">{links.backlinks.length}</span>}</h3>
+      {links.backlinks.length === 0 ? (
+        <p className="text-[13px] text-faint">还没有笔记链接到这里。在别的笔记里输入 [[{title}]] 就能连过来。</p>
+      ) : (
+        <ul className="grid gap-2">
+          {links.backlinks.map((b) => (
+            <li key={b.id}>
+              <Link href={`/notes?id=${b.id}`} className="block rounded-xl border border-rule px-3.5 py-2.5 row-hover">
+                <span className="flex items-center gap-2 text-[13.5px] font-medium"><Dot color={colors[b.course_id]} size={7} />{b.title}</span>
+                {b.snippet && <span className="block text-[12.5px] text-muted mt-1 leading-relaxed line-clamp-2">{clean(b.snippet)}</span>}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+      {missing.length > 0 && (
+        <p className="mt-4 text-[12.5px] text-muted leading-relaxed">
+          还没建的笔记：
+          {missing.map((o, i) => (
+            <span key={o.title}>{i > 0 && "、"}
+              <Link href={`/notes?wiki=${encodeURIComponent(o.title)}`} className="border-b border-dashed border-faint hover:text-accent">{o.title}</Link>
+            </span>
+          ))}
+          <span className="text-faint">（点击即新建）</span>
+        </p>
+      )}
+    </section>
+  );
+}

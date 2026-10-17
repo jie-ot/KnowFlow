@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
 jobs:
   build:
     strategy:
@@ -42,7 +46,7 @@ jobs:
           python-version: "3.12"
 
       - name: 安装 Python 依赖
-        run: pip install -r backend/requirements.txt -r backend/requirements-desktop.txt -r packaging/requirements-build.txt
+        run: pip install -r backend/requirements.txt -r backend/requirements-desktop.txt -r backend/requirements-ocr.txt -r packaging/requirements-build.txt
 
       - name: 打包
         run: python packaging/build_desktop.py

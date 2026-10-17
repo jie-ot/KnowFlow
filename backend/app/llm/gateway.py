@@ -226,6 +226,85 @@ async def stream_chat(
             raise _wrap_transport_error(exc, cfg) from None
 
 
+async def stream_chat_tools(
+    cfg: ModelConfig,
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None,
+    max_tokens: int,
+    temperature: float,
+    idle_timeout: float,
+    total_timeout: float,
+) -> AsyncIterator[tuple[str, Any]]:
+    """带工具调用的流式对话（OpenAI function calling 格式）。
+
+    依次产出 ("delta", 文本)，最后产出 ("tool_calls", [...]) 和 ("finish", 原因)。
+    """
+    payload: dict[str, Any] = {
+        "model": cfg.model,
+        "messages": messages,
+        "stream": True,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if tools:
+        payload["tools"] = tools
+    deadline = time.monotonic() + total_timeout
+    calls: dict[int, dict[str, Any]] = {}
+    async with _semaphore():
+        try:
+            async with httpx.AsyncClient(timeout=_timeout(idle_timeout), transport=TRANSPORT) as client:
+                async with client.stream("POST", endpoint(cfg.base_url), json=payload,
+                                         headers=_headers(cfg, True)) as resp:
+                    if resp.status_code != 200:
+                        body = (await resp.aread()).decode("utf-8", errors="replace")
+                        raise map_http_error(resp.status_code, body)
+                    lines = resp.aiter_lines()
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise LLMError("TIMEOUT")
+                        try:
+                            line = await asyncio.wait_for(anext(lines), timeout=min(idle_timeout, remaining))
+                        except StopAsyncIteration:
+                            break
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            obj = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(obj, dict):
+                            continue
+                        if obj.get("error"):
+                            raise LLMError("UNKNOWN", detail=_provider_message(data))
+                        choices = obj.get("choices") or []
+                        if not choices:
+                            continue
+                        choice = choices[0]
+                        delta = choice.get("delta") or {}
+                        if delta.get("content"):
+                            yield "delta", delta["content"]
+                        for tc in delta.get("tool_calls") or []:
+                            slot = calls.setdefault(int(tc.get("index", 0)), {"id": "", "name": "", "arguments": ""})
+                            slot["id"] = tc.get("id") or slot["id"]
+                            fn = tc.get("function") or {}
+                            slot["name"] += fn.get("name") or ""
+                            slot["arguments"] += fn.get("arguments") or ""
+                        if choice.get("finish_reason"):
+                            yield "finish", choice["finish_reason"]
+        except LLMError:
+            raise
+        except (httpx.HTTPError, TimeoutError) as exc:
+            raise _wrap_transport_error(exc, cfg) from None
+    if calls:
+        yield "tool_calls", [calls[i] for i in sorted(calls)]
+
+
 async def chat(
     cfg: ModelConfig,
     messages: list[dict[str, str]],

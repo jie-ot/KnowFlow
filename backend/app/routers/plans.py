@@ -228,6 +228,41 @@ def delete_task(task_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dic
     return {"ok": True}
 
 
+@router.get("/calendar")
+def calendar(start: str, end: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    """月历：区间内有日期的任务、未排期任务、每天到期的复习卡片数。"""
+    _check_day(start, "start")
+    _check_day(end, "end")
+    if end < start:
+        raise AppError(422, "VALIDATION", "结束日期不能早于开始日期", field="end")
+    today = _today(conn)
+    base = ("SELECT t.*, p.goal AS plan_goal, p.course_id AS course_id, c.name AS course_name, "
+            "c.color AS course_color FROM tasks t JOIN plans p ON p.id = t.plan_id "
+            "LEFT JOIN courses c ON c.id = p.course_id WHERE p.archived = 0 ")
+
+    def rows(sql: str, params: tuple) -> list[dict[str, Any]]:
+        out = []
+        for r in conn.execute(base + sql, params):
+            item = task_out(r, today)
+            item.update({"plan_goal": r["plan_goal"], "course_id": r["course_id"],
+                         "course_name": r["course_name"], "course_color": r["course_color"]})
+            out.append(item)
+        return out
+
+    scheduled = rows("AND t.due_date BETWEEN ? AND ? ORDER BY t.due_date, t.sort", (start, end))
+    unscheduled = rows("AND t.due_date IS NULL AND t.status != 'done' ORDER BY t.sort", ())
+    reviews: dict[str, int] = {}
+    for r in conn.execute(
+        "SELECT CASE WHEN due < ? THEN ? ELSE due END AS day, COUNT(*) AS n FROM cards "
+        "WHERE deleted_at IS NULL AND due <= ? GROUP BY day", (today, today, end)
+    ):
+        if start <= r["day"] <= end:
+            reviews[r["day"]] = r["n"]
+    plans = [{"id": r["id"], "goal": r["goal"], "deadline": r["deadline"], "course_id": r["course_id"]}
+             for r in conn.execute("SELECT * FROM plans WHERE archived = 0 ORDER BY updated_at DESC")]
+    return {"today": today, "tasks": scheduled, "unscheduled": unscheduled, "reviews": reviews, "plans": plans}
+
+
 @router.get("/tasks/today")
 def today_tasks(conn: sqlite3.Connection = Depends(get_db)) -> dict:
     """首页用：今天到期和已逾期的未完成任务，以及今天完成的任务。"""

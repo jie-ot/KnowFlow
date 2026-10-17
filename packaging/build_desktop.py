@@ -58,6 +58,11 @@ def main() -> None:
         "--collect-data", "latex2mathml",
         "--collect-data", "pptx",
         "--collect-data", "docx",
+        # 文字识别：模型文件、onnxruntime 和 pdfium 的二进制
+        "--collect-all", "rapidocr",
+        "--collect-binaries", "onnxruntime",
+        "--collect-all", "pypdfium2",
+        "--collect-all", "pypdfium2_raw",
         "--icon", str(icon),
         "--distpath", str(ROOT / "dist"),
         "--workpath", str(ROOT / "build" / "pyinstaller"),

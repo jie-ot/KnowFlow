@@ -15,6 +15,8 @@ from .. import config
 from ..db import dumps, get_db, new_id, now_iso, rows_to_dicts
 from ..errors import AppError, not_found
 from ..logic.export import note_to_markdown, parse_front_matter
+from ..logic.links import add_link, extract_links, remove_link, rename_links, snippet_around, title_index
+from ..logic.text import plain_excerpt
 from ..repo import get_course, get_note_row, note_detail, note_summary
 
 router = APIRouter(prefix="/api", tags=["笔记"])
@@ -132,6 +134,7 @@ def update_note(note_id: str, body: NotePatch, conn: sqlite3.Connection = Depend
     if not fields:
         return note_detail(conn, note)
     sets = ", ".join(f"{k} = ?" for k in fields)
+    renamed = 0
     with conn:
         conn.execute(
             f"UPDATE notes SET {sets}, version = version + 1, updated_at = ? WHERE id = ?",
@@ -139,7 +142,127 @@ def update_note(note_id: str, body: NotePatch, conn: sqlite3.Connection = Depend
         )
         if "course_id" in fields:  # 卡片跟随笔记换学科
             conn.execute("UPDATE cards SET course_id = ? WHERE source_note_id = ?", (fields["course_id"], note_id))
-    return note_detail(conn, get_note_row(conn, note_id))
+        if "title" in fields and fields["title"].strip().lower() != note["title"].strip().lower():
+            renamed = _rename_backlinks(conn, note_id, note["title"], fields["title"])
+    detail = note_detail(conn, get_note_row(conn, note_id))
+    detail["renamed_links"] = renamed
+    return detail
+
+
+def _rename_backlinks(conn: sqlite3.Connection, note_id: str, old: str, new: str) -> int:
+    """笔记改名后，把其他笔记里指向旧标题的 [[链接]] 一起改掉（不改它们的更新时间）。"""
+    other = conn.execute(
+        "SELECT id FROM notes WHERE deleted_at IS NULL AND lower(title) = lower(?) AND id != ?", (old, note_id)
+    ).fetchone()
+    if other:  # 还有别的笔记叫这个名字，链接仍然有效，不动
+        return 0
+    total = 0
+    for row in conn.execute(
+        "SELECT id, content FROM notes WHERE deleted_at IS NULL AND id != ? AND content LIKE ?",
+        (note_id, "%[[%"),
+    ).fetchall():
+        content, count = rename_links(row["content"], old, new)
+        if count:
+            conn.execute("UPDATE notes SET content = ?, version = version + 1 WHERE id = ?", (content, row["id"]))
+            total += count
+    return total
+
+
+@router.get("/notes/{note_id}/links")
+def note_links(note_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    """出链（这篇笔记链接到谁）与反向链接（谁链接到这篇笔记）。"""
+    note = get_note_row(conn, note_id)
+    index = title_index(conn)
+    outgoing = []
+    for title in extract_links(note["content"]):
+        target = index.get(title.lower())
+        outgoing.append({"title": title, "note_id": target["id"] if target else None,
+                         "course_id": target["course_id"] if target else None})
+    backlinks = []
+    key = note["title"].strip().lower()
+    for row in conn.execute(
+        "SELECT id, title, course_id, content, updated_at FROM notes "
+        "WHERE deleted_at IS NULL AND id != ? AND content LIKE ? ORDER BY updated_at DESC",
+        (note_id, "%[[%"),
+    ):
+        if any(t.lower() == key for t in extract_links(row["content"])):
+            backlinks.append({"id": row["id"], "title": row["title"], "course_id": row["course_id"],
+                              "snippet": snippet_around(row["content"], note["title"])})
+    return {"outgoing": outgoing, "backlinks": backlinks}
+
+
+class LinkIn(BaseModel):
+    target_id: str
+
+
+def _write_content(conn: sqlite3.Connection, note_id: str, content: str) -> None:
+    conn.execute("UPDATE notes SET content = ?, version = version + 1, updated_at = ? WHERE id = ?",
+                 (content, now_iso(), note_id))
+
+
+@router.post("/notes/{note_id}/links")
+def link_notes(note_id: str, body: LinkIn, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    """在知识图谱里手动连线：在源笔记末尾的“相关笔记：”里加上 [[目标标题]]。"""
+    note = get_note_row(conn, note_id)
+    target = get_note_row(conn, body.target_id)
+    if note["id"] == target["id"]:
+        raise AppError(422, "VALIDATION", "不能链接到自己")
+    content, changed = add_link(note["content"], target["title"])
+    if changed:
+        with conn:
+            _write_content(conn, note_id, content)
+    return {"ok": True, "changed": changed}
+
+
+@router.delete("/notes/{note_id}/links/{target_id}")
+def unlink_notes(note_id: str, target_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    """删除连线：去掉源笔记里指向目标的 [[链接]]（正文里的改回普通文字）。"""
+    note = get_note_row(conn, note_id)
+    target = get_note_row(conn, target_id)
+    content, removed = remove_link(note["content"], target["title"])
+    if removed:
+        with conn:
+            _write_content(conn, note_id, content)
+    return {"ok": True, "removed": removed}
+
+
+@router.get("/graph")
+def knowledge_graph(course_id: str | None = None, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    """知识关系图：笔记为节点，[[双链]] 为边（同学 B-FR-10）。"""
+    sql = "SELECT id, title, course_id, content, updated_at FROM notes WHERE deleted_at IS NULL"
+    params: list[Any] = []
+    if course_id:
+        sql += " AND course_id = ?"
+        params.append(course_id)
+    rows = conn.execute(sql, params).fetchall()
+    index = title_index(conn)
+    ids = {r["id"] for r in rows}
+    cards = dict(conn.execute(
+        "SELECT source_note_id, COUNT(*) FROM cards WHERE deleted_at IS NULL GROUP BY source_note_id"
+    ).fetchall())
+    edges: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    unresolved = 0
+    for row in rows:
+        for title in extract_links(row["content"]):
+            target = index.get(title.lower())
+            if not target:
+                unresolved += 1
+                continue
+            if target["id"] == row["id"] or target["id"] not in ids:
+                continue
+            pair = (row["id"], target["id"])
+            if pair in seen:
+                continue
+            seen.add(pair)
+            edges.append({"source": row["id"], "target": target["id"]})
+    degree: dict[str, int] = {}
+    for e in edges:
+        degree[e["source"]] = degree.get(e["source"], 0) + 1
+        degree[e["target"]] = degree.get(e["target"], 0) + 1
+    nodes = [{"id": r["id"], "title": r["title"], "course_id": r["course_id"], "degree": degree.get(r["id"], 0),
+              "card_count": cards.get(r["id"], 0), "excerpt": plain_excerpt(r["content"], 80)} for r in rows]
+    return {"nodes": nodes, "edges": edges, "unresolved": unresolved}
 
 
 @router.get("/notes/{note_id}/delete-preview")

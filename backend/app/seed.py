@@ -38,6 +38,19 @@ int main(void) {
 ```
 
 `fork()` 调用一次、返回两次：子进程中返回 0，父进程中返回子进程的 PID。
+
+相关笔记：[[进程调度算法]]
+"""
+
+SCHED_NOTE = r"""## 常见调度算法
+
+| 算法 | 是否抢占 | 特点 |
+| --- | --- | --- |
+| FCFS 先来先服务 | 否 | 简单，对短作业不利 |
+| SJF 短作业优先 | 可抢占（SRTF） | 平均等待时间最短，需要预知运行时间 |
+| RR 时间片轮转 | 是 | 响应快，时间片太小切换开销大 |
+
+调度的对象是 [[进程与线程]] 里讲的线程；比较算法时常用 **平均周转时间**。
 """
 
 MATH_NOTE = r"""## 泰勒公式
@@ -57,7 +70,7 @@ $$f(x) = \sum_{k=0}^{n} \frac{f^{(k)}(x_0)}{k!}(x - x_0)^k + o\big((x - x_0)^n\b
 def seed(conn: sqlite3.Connection) -> None:
     now, today = now_iso(), today_str()
     os_id, math_id = new_id(), new_id()
-    os_note, math_note = new_id(), new_id()
+    os_note, math_note, sched_note = new_id(), new_id(), new_id()
     with conn:
         conn.executemany(
             "INSERT INTO courses(id, name, color, sort, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -66,6 +79,7 @@ def seed(conn: sqlite3.Connection) -> None:
         conn.executemany(
             "INSERT INTO notes(id, course_id, title, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             [(os_note, os_id, "进程与线程", OS_NOTE, dumps(["第 2 章", "期中"]), now, now),
+             (sched_note, os_id, "进程调度算法", SCHED_NOTE, dumps(["第 2 章"]), now, now),
              (math_note, math_id, "泰勒公式", MATH_NOTE, dumps(["第 3 章"]), now, now)],
         )
         cards = [

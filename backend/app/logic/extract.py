@@ -6,7 +6,7 @@
 - DOCX 段落         docx:para0012        第 12 段
 - DOCX 表格行       docx:table002:r003   表 2 第 3 行
 - 文本 / 代码行号    text:L0001-L0040     第 1–40 行（代码为 cpp: 或 code:）
-- 图片              image:file           整张图片（基础版不做 OCR）
+- 图片              image:file           整张图片（装了识别组件时自动识别文字）
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import ocr
 from .text import normalize_extracted
 
 TEXT_LINES_PER_UNIT = 40
@@ -54,7 +55,8 @@ MAGIC = {
 WARNING_TEXT = {
     "no_text": "这一页没有可提取的文字，可能是扫描图片",
     "extract_error": "这一部分解析出错，已跳过",
-    "ocr_unavailable": "基础版暂不识别图片文字，可以手动补充",
+    "ocr_unavailable": "没有安装文字识别组件，图片里的文字需要手动补充",
+    "ocr": "文字由图片识别得到，可能有错字，建议对照原图校对",
     "user_edited": "文字由你手动补充或修改",
     "blank": "内容为空",
 }
@@ -107,8 +109,7 @@ def extract(path: Path, fmt: str, ext: str) -> ExtractResult:
         if fmt in ("text", "md", "code"):
             return _extract_text(path, fmt, ext)
         if fmt == "image":
-            unit = Unit("image", 1, "image:file", "整张图片", "", ["ocr_unavailable"])
-            return ExtractResult("partial", [unit], "ocr_unavailable", "基础版暂不识别图片文字，可以手动补充")
+            return _extract_image(path)
     except Exception as exc:  # 解析库抛出的各种异常统一归为“文件损坏”
         return ExtractResult("failed", [], "corrupted", f"文件无法解析，可能已损坏（{type(exc).__name__}）")
     return ExtractResult("failed", [], "unsupported", "不支持的格式")
@@ -121,7 +122,7 @@ def _finish(units: list[Unit], kind_label: str) -> ExtractResult:
     if len(empty) == len(units):
         return ExtractResult(
             "partial", units, "no_text",
-            "没有提取到文字，可能是扫描件；基础版暂不支持 OCR，可以在对应位置手动补充文字",
+            "没有提取到文字，可能是扫描件；可以在对应位置手动补充文字",
         )
     if empty:
         return ExtractResult("partial", units, "partial_text", f"有 {len(empty)} {kind_label}没有可提取的文字")
@@ -150,7 +151,27 @@ def _extract_pdf(path: Path) -> ExtractResult:
         if not text and not warnings:
             warnings.append("no_text")
         units.append(Unit("page", index, f"pdf:p{index:03d}", f"第 {index} 页", text, warnings))
+    # 扫描版 PDF：没有文字层的页用 OCR 识别
+    blank = [u.ordinal for u in units if not u.text.strip()]
+    if blank and ocr.available():
+        found = ocr.ocr_pdf_pages(path, blank)
+        for u in units:
+            text = normalize_extracted(found.get(u.ordinal, ""))
+            if text:
+                u.text = text
+                u.warnings = ["ocr"]
     return _finish(units, "页")
+
+
+def _extract_image(path: Path) -> ExtractResult:
+    if not ocr.available():
+        unit = Unit("image", 1, "image:file", "整张图片", "", ["ocr_unavailable"])
+        return ExtractResult("partial", [unit], "ocr_unavailable", WARNING_TEXT["ocr_unavailable"])
+    text = normalize_extracted(ocr.ocr_image_file(path))
+    if not text:
+        unit = Unit("image", 1, "image:file", "整张图片", "", ["no_text"])
+        return ExtractResult("partial", [unit], "no_text", "图片里没有识别到文字，可以手动补充")
+    return ExtractResult("ready", [Unit("image", 1, "image:file", "整张图片", text, ["ocr"])])
 
 
 def _shape_texts(shape, out: list[str]) -> None:  # type: ignore[no-untyped-def]

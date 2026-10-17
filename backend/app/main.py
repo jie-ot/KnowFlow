@@ -14,7 +14,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from . import config
 from .db import connect, init_db, now_iso
 from .errors import AppError, install_handlers
-from .routers import ai, cards, courses, materials, misc, notes, plans
+from .routers import ai, assistant, cards, courses, extras, materials, misc, notes, plans
 from .seed import seed
 
 
@@ -85,7 +85,7 @@ app.add_middleware(
     expose_headers=["Content-Disposition", "X-Request-ID"],
 )
 install_handlers(app)
-for module in (courses, notes, materials, cards, plans, ai, misc):
+for module in (courses, notes, materials, cards, plans, ai, assistant, extras, misc):
     app.include_router(module.router)
 
 

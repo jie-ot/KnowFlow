@@ -213,7 +213,30 @@ CREATE TABLE settings (
 );
 """
 
-MIGRATIONS = [SCHEMA_V1]
+# v2：番茄钟专注记录、任务实际用时、AI 学习小结
+SCHEMA_V2 = """
+ALTER TABLE tasks ADD COLUMN actual_minutes INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE focus_sessions (
+    id          TEXT PRIMARY KEY,
+    task_id     TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    minutes     INTEGER NOT NULL,
+    started_at  TEXT NOT NULL,
+    ended_at    TEXT NOT NULL,
+    logical_day TEXT NOT NULL
+);
+CREATE INDEX idx_focus_day ON focus_sessions(logical_day);
+CREATE TABLE summaries (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    period_start TEXT NOT NULL,
+    period_end   TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    model        TEXT,
+    created_at   TEXT NOT NULL
+);
+"""
+
+MIGRATIONS = [SCHEMA_V1, SCHEMA_V2]
 
 
 def now_iso() -> str:
