@@ -500,3 +500,12 @@ body {
   border-bottom: 1px dashed var(--faint);
   border-radius: 0;
 }
+
+/* AI 等待中的不定长进度条 */
+@keyframes kf-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+.kf-indeterminate {
+  animation: kf-indeterminate 1.3s ease-in-out infinite;
+}

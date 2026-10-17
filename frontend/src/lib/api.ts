@@ -148,9 +148,13 @@ export type SearchItem = {
 
 /* ---------- AI 流式任务 ---------- */
 
+/** 分批任务（资料整理）的进度：第 step / total 部分，本部分已生成 chars 字，预计约 expected 字 */
+export type AiProgressInfo = { step: number; total: number; done: number; label: string; chars: number; expected: number };
+
 export type RunHandlers = {
   onStart?: (d: { draft_id: string; input_chars: number; model: string }) => void;
   onDelta?: (text: string) => void;
+  onProgress?: (p: AiProgressInfo) => void;
   onDone?: (draft: Draft) => void;
   onError?: (err: { kind: string; message: string; retryable: boolean; detail?: string }, partial?: string) => void;
 };
@@ -187,6 +191,7 @@ export async function runAi(body: Record<string, unknown>, h: RunHandlers, signa
         const payload = JSON.parse(data);
         if (ev === "start") h.onStart?.(payload);
         else if (ev === "delta") h.onDelta?.(payload.text);
+        else if (ev === "progress") h.onProgress?.(payload);
         else if (ev === "done") h.onDone?.(payload.draft);
         else if (ev === "error") h.onError?.(payload.error, payload.partial);
       }

@@ -8,7 +8,7 @@ import useSWR, { mutate as globalMutate } from "swr";
 import { api, ApiError, Course, fetcher, NoteSummary, Plan, Problem, Task } from "@/lib/api";
 import { dayLabel, TASK_KINDS } from "@/lib/format";
 import { useAiTask } from "@/components/ai";
-import { AiStatusLine, Warnings } from "@/components/AiSheets";
+import { AiProgress, AiStatusLine, Warnings } from "@/components/AiSheets";
 import { PlanCalendar } from "@/components/PlanCalendar";
 import { FocusButton } from "@/components/Focus";
 import { Dot, Empty, Modal, PageHeader, useConfirm, useToast } from "@/components/ui";
@@ -361,7 +361,7 @@ function PlanAiSheet({ open, plan, onClose, onAccepted }: { open: boolean; plan:
         </div>
       ) : (
         <div className="p-5 space-y-4 min-h-[44vh]">
-          {ai.state.running && <p className="text-[14px] text-muted py-16 text-center">正在根据你的目标和时间拆分任务…</p>}
+          {ai.state.running && <AiProgress state={ai.state} title="正在根据你的目标和时间拆分任务" />}
           {ai.state.error && <p className="rounded-xl px-4 py-3 bg-bad-soft text-[13px] text-bad">{ai.state.error.message}</p>}
           {result?.result_type === "needs_clarification" && (
             <div className="rounded-xl px-4 py-3 bg-warn-soft text-[13.5px]">

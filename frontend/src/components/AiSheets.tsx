@@ -17,6 +17,36 @@ function Elapsed({ since }: { since: number | null }) {
   return <span className="tabular-nums">{((now - since) / 1000).toFixed(0)} 秒</span>;
 }
 
+/** AI 生成中的进度：分批任务显示真实进度（第几部分、百分比），其他任务显示等待动画和已用时间 */
+export function AiProgress({ state, title, hint }: { state: AiState; title: string; hint?: string }) {
+  const p = state.progress;
+  const pct = p
+    ? Math.min(99, Math.round(((p.done + Math.min(p.chars / Math.max(p.expected, 1), 0.95)) / Math.max(p.total, 1)) * 100))
+    : null;
+  return (
+    <div className="py-12 px-4 max-w-[480px] mx-auto text-center">
+      <div className="w-11 h-11 mx-auto rounded-xl grid place-items-center bg-accent-soft text-accent mb-4">
+        <Sparkles size={19} className="animate-pulse" />
+      </div>
+      <p className="text-[15px] font-medium">{title}</p>
+      <div className="mt-5 h-2 rounded-full bg-hover overflow-hidden" role="progressbar" aria-valuenow={pct ?? undefined} aria-valuemin={0} aria-valuemax={100}>
+        {pct === null
+          ? <div className="h-full w-1/3 rounded-full bg-accent kf-indeterminate" />
+          : <div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${Math.max(pct, 3)}%` }} />}
+      </div>
+      <div className="mt-2.5 flex justify-between gap-3 text-[12.5px] text-muted tabular-nums">
+        <span className="truncate">
+          {p ? (p.total > 1 ? `第 ${Math.min(p.step, p.total)} / ${p.total} 部分${p.label ? `（片段 ${p.label}）` : ""}` : "正在整理")
+            : state.text ? `已生成 ${state.text.length} 字` : "等待模型响应"}
+        </span>
+        <span className="shrink-0">{pct !== null && `${pct}% · `}已用 <Elapsed since={state.startedAt} /></span>
+      </div>
+      {p && p.chars > 0 && <p className="mt-1 text-[12px] text-faint">这一部分已生成约 {p.chars} 字</p>}
+      {hint && <p className="mt-5 text-[12.5px] text-faint leading-relaxed">{hint}</p>}
+    </div>
+  );
+}
+
 export function AiStatusLine({ state }: { state: AiState }) {
   if (state.running)
     return (
@@ -168,7 +198,7 @@ export function ExtractSheet({
       </>}>
       <div className="p-5 space-y-3 min-h-[40vh]">
         <ErrorBox state={state} onRetry={onRetry} />
-        {state.running && <p className="text-[14px] text-muted py-10 text-center">正在从笔记中挑出值得记住的知识点…</p>}
+        {state.running && <AiProgress state={state} title="正在从笔记中挑出值得记住的知识点" />}
         {state.draft && <Warnings items={state.draft.warnings} />}
         {items.map((item, i) => (
           <div key={i} className="index-card px-5 pt-7 pb-4 group">

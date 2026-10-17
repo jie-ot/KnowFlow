@@ -51,8 +51,12 @@ COMPOSE_SYSTEM = (
 )
 
 
-def compose_user(instruction: str, blocks: list[str]) -> str:
+def compose_user(instruction: str, blocks: list[str], part: int = 1, total: int = 1) -> str:
     head = f"整理要求：{instruction}\n\n" if instruction.strip() else ""
+    if total > 1:
+        head += (f"资料较长，已分成 {total} 部分依次整理，这是第 {part} 部分。只整理这一部分的片段；"
+                 "title 写整份资料的主题；" + ("可以先写一节简短概览。" if part == 1 else "不要再写全章概览或开场白。")
+                 + "\n\n")
     return head + "资料片段：\n\n" + "\n\n".join(blocks)
 
 

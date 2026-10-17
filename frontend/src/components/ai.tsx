@@ -3,7 +3,7 @@
 import { ShieldCheck } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { createContext, ReactNode, useCallback, useContext, useRef, useState } from "react";
-import { api, ApiError, Draft, runAi } from "@/lib/api";
+import { AiProgressInfo, api, ApiError, Draft, runAi } from "@/lib/api";
 import { Modal, useToast } from "./ui";
 
 export type AiState = {
@@ -14,9 +14,10 @@ export type AiState = {
   startedAt: number | null;
   inputChars: number;
   model: string;
+  progress: AiProgressInfo | null;
 };
 
-const initial: AiState = { running: false, text: "", draft: null, error: null, startedAt: null, inputChars: 0, model: "" };
+const initial: AiState = { running: false, text: "", draft: null, error: null, startedAt: null, inputChars: 0, model: "", progress: null };
 
 type Consent = { config_id: string; provider_host: string; model: string; purpose: string; resolve: (ok: boolean) => void };
 
@@ -91,6 +92,7 @@ export function useAiTask() {
             {
               onStart: (d) => setState((s) => ({ ...s, inputChars: d.input_chars, model: d.model })),
               onDelta: (t) => setState((s) => ({ ...s, text: s.text + t })),
+              onProgress: (progress) => setState((s) => ({ ...s, progress })),
               onDone: (draft) => setState((s) => ({ ...s, running: false, draft })),
               onError: (error, partial) => setState((s) => ({ ...s, running: false, error, text: partial || s.text })),
             },

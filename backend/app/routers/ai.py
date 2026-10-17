@@ -331,12 +331,23 @@ def _prepare(conn: sqlite3.Connection, body: RunIn, cfg: ModelConfig, limit: int
         joined = "\n\n".join(blocks)
         chars = sum(char_count(r["text"]) for r in units)
         _check_length(chars, limit, joined)
-        max_tokens = min(cfg.max_output_tokens, max(2048, int(estimate_tokens(joined) * 1.2)))
+        # 资料多时分批整理：每批的输出都放得进模型的输出上限，避免 JSON 被截断
+        batches: list[list[str]] = [[]]
+        size = 0
+        for alias, block in zip(aliases, blocks):
+            n = char_count(block)
+            if batches[-1] and (size + n > COMPOSE_BATCH_CHARS or len(batches[-1]) >= COMPOSE_BATCH_UNITS):
+                batches.append([])
+                size = 0
+            batches[-1].append(alias)
+            size += n
+        max_tokens = min(cfg.max_output_tokens, 8192)
         return TaskSpec(
             kind="compose", stream=False, max_tokens=max_tokens, input_chars=chars,
             course_id=units[0]["course_id"],
             params={"unit_ids": [r["id"] for r in units], "instruction": body.instruction},
-            context={"aliases": aliases},
+            context={"aliases": aliases, "batches": batches, "blocks": dict(zip(aliases, blocks)),
+                     "instruction": body.instruction},
             messages=[{"role": "system", "content": prompts.COMPOSE_SYSTEM},
                       {"role": "user", "content": prompts.compose_user(body.instruction, blocks)}],
         )
@@ -373,6 +384,78 @@ def _prepare(conn: sqlite3.Connection, body: RunIn, cfg: ModelConfig, limit: int
 
 
 # ---------- 结构化结果的解析与校验
+
+COMPOSE_BATCH_CHARS = 3000
+COMPOSE_BATCH_UNITS = 10
+
+
+async def _compose_batches(cfg: ModelConfig, spec: TaskSpec, settings: dict[str, Any]) -> AsyncIterator[tuple[str, Any]]:
+    """分批整理资料。产出 ("progress", {...}) 若干次，最后产出 ("result", (result, warnings, raw))。
+
+    某一批输出被截断时，把这一批对半拆开重来；解析失败时这一批自动重试一次。
+    """
+    ctx = spec.context
+    queue = [list(b) for b in ctx["batches"]]
+    total = len(queue)
+    done = 0
+    sections: list[Any] = []
+    title = ""
+    while queue:
+        batch = queue.pop(0)
+        step = done + 1
+        expected = int(sum(char_count(ctx["blocks"][a]) for a in batch) * 1.1) + 200
+        label = batch[0] if len(batch) == 1 else f"{batch[0]}–{batch[-1]}"
+        yield "progress", {"step": step, "total": total, "label": label, "chars": 0, "expected": expected, "done": done}
+        messages = [{"role": "system", "content": prompts.COMPOSE_SYSTEM},
+                    {"role": "user", "content": prompts.compose_user(ctx["instruction"], [ctx["blocks"][a] for a in batch],
+                                                                     step, total)}]
+        split = False
+        for attempt in range(2):
+            parts: list[str] = []
+            finish = None
+            ticks = 0
+            async for kind, value in gateway.stream_chat(
+                cfg, messages, max_tokens=spec.max_tokens, temperature=float(settings["temperature"]),
+                idle_timeout=float(settings["idle_timeout_s"]), total_timeout=float(settings["total_timeout_s"]),
+                json_mode=cfg.json_mode,
+            ):
+                if kind == "delta":
+                    parts.append(value)
+                    ticks += 1
+                    if ticks % 25 == 0:
+                        yield "progress", {"step": step, "total": total, "label": label, "done": done,
+                                           "chars": sum(len(x) for x in parts), "expected": expected}
+                elif kind == "finish":
+                    finish = value
+            text = "".join(parts)
+            if finish == "length":
+                if len(batch) > 1:
+                    half = len(batch) // 2
+                    queue[0:0] = [batch[:half], batch[half:]]
+                    total += 1
+                    split = True
+                    break
+                raise LLMError("PARSE", "单个片段的内容太长，模型输出被截断；可以把这个片段的文字拆短后再试",
+                               detail=text[-500:])
+            try:
+                data = gateway.parse_json_object(text)
+                got = data.get("sections")
+                if not isinstance(got, list) or not got:
+                    raise LLMError("PARSE")
+            except LLMError:
+                if attempt == 1:
+                    raise LLMError("PARSE", f"第 {step} 部分的返回格式不正确，可以重试", detail=text[:2000]) from None
+                continue
+            sections.extend(got)
+            title = title or str(data.get("title") or "")
+            break
+        if not split:
+            done += 1
+    yield "progress", {"step": total, "total": total, "label": "", "done": total, "chars": 0, "expected": 1}
+    merged = {"title": title, "sections": sections}
+    result, warnings = _parse_compose(merged, ctx["aliases"])
+    yield "result", (result, warnings, json.dumps(merged, ensure_ascii=False))
+
 
 def _parse_extract(data: dict[str, Any], count: int) -> tuple[dict[str, Any], list[str]]:
     items_raw = data.get("items")
@@ -619,6 +702,14 @@ async def run_task(body: RunIn) -> StreamingResponse:
                     warnings.insert(0, "输出达到长度上限被截断，建议把笔记分段后再整理")
                 draft = _finish_draft(draft_id, status="ready", output=output, warnings=warnings, usage=usage,
                                       resolved_at=None)
+            elif spec.kind == "compose":
+                result = warnings = raw = None
+                async for kind, value in _compose_batches(cfg, spec, settings):
+                    if kind == "progress":
+                        yield _sse("progress", value)
+                    else:
+                        result, warnings, raw = value
+                draft = _finish_draft(draft_id, status="ready", output=raw, result=result, warnings=warnings, usage=None)
             else:
                 if spec.kind == "extract":
                     parse = lambda d: _parse_extract(d, spec.params["count"])  # noqa: E731

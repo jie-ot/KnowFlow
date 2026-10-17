@@ -164,6 +164,7 @@ async def stream_chat(
     temperature: float,
     idle_timeout: float,
     total_timeout: float,
+    json_mode: bool = False,
 ) -> AsyncIterator[tuple[str, Any]]:
     """流式调用。依次产出 ("delta", 文本)、("finish", 原因)、("usage", 用量)。
 
@@ -177,6 +178,8 @@ async def stream_chat(
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     deadline = time.monotonic() + total_timeout
     async with _semaphore():
         try:

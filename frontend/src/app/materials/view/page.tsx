@@ -8,7 +8,7 @@ import useSWR, { mutate as globalMutate } from "swr";
 import { API, api, ApiError, fetcher, Material, Note, Unit } from "@/lib/api";
 import { sizeLabel } from "@/lib/format";
 import { useAiTask } from "@/components/ai";
-import { AiStatusLine, Warnings } from "@/components/AiSheets";
+import { AiProgress, AiStatusLine, Warnings } from "@/components/AiSheets";
 import { StatusPill } from "@/components/MaterialBits";
 import { Markdown } from "@/components/Markdown";
 import { Modal, useConfirm, useToast } from "@/components/ui";
@@ -207,7 +207,10 @@ function ComposeSheet({ open, unitIds, onClose, onSaved }: {
         </div>
       ) : (
         <div className="p-5 space-y-4 min-h-[50vh]">
-          {ai.state.running && <p className="text-[14px] text-muted py-16 text-center">正在阅读资料并整理，长一点的资料可能要一分钟左右…</p>}
+          {ai.state.running && (
+            <AiProgress state={ai.state} title="正在阅读资料并整理成笔记"
+              hint={`共 ${unitIds.length} 个片段。资料多时会分成几部分依次整理，每部分都标好出处，最后合成一篇笔记；中途可以点“放弃”。`} />
+          )}
           {ai.state.error && (
             <div className="rounded-xl px-4 py-3 bg-bad-soft text-[13px]">
               <p className="font-medium text-bad">{ai.state.error.message}</p>
