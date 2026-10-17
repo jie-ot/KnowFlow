@@ -71,7 +71,7 @@ export default function MaterialsPage() {
         {items?.map((m) => {
           const Icon = FORMAT_ICON[m.format] || FileText;
           return (
-            <Link key={m.id} href={`/materials/${m.id}`} className="flex items-center gap-4 py-3.5 px-1 row-hover rounded-lg">
+            <Link key={m.id} href={`/materials/view?id=${m.id}`} className="flex items-center gap-4 py-3.5 px-1 row-hover rounded-lg">
               <Icon size={20} className="text-muted shrink-0" strokeWidth={1.6} />
               <div className="flex-1 min-w-0">
                 <p className="text-[14px] font-medium truncate">{m.display_title}</p>

@@ -1,4 +1,5 @@
-export const API = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000";
+// 打包后前端由后端同源提供，留空即可；开发时 .env.development 指向 8000 端口
+export const API = process.env.NEXT_PUBLIC_API_BASE || "";
 
 export class ApiError extends Error {
   code: string;
@@ -31,7 +32,7 @@ export async function api<T = unknown>(path: string, init?: RequestInit & { json
       body: json !== undefined ? JSON.stringify(json) : rest.body,
     });
   } catch {
-    throw new ApiError(0, { code: "OFFLINE", message: "连不上本地后端，请确认 start.sh 正在运行" });
+    throw new ApiError(0, { code: "OFFLINE", message: "连不上本地后端，请确认 KnowFlow 正在运行" });
   }
   return handle<T>(res);
 }
@@ -150,7 +151,7 @@ export async function runAi(body: Record<string, unknown>, h: RunHandlers, signa
     });
   } catch (e) {
     if ((e as Error).name === "AbortError") return;
-    throw new ApiError(0, { code: "OFFLINE", message: "连不上本地后端，请确认 start.sh 正在运行" });
+    throw new ApiError(0, { code: "OFFLINE", message: "连不上本地后端，请确认 KnowFlow 正在运行" });
   }
   if (!res.ok || !res.body) await handle(res);
   const reader = res.body!.getReader();

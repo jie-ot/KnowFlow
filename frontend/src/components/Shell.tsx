@@ -225,7 +225,7 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
   const go = (it: SearchItem) => {
     onClose();
     if (it.type === "note") router.push(`/notes?id=${it.id}`);
-    else if (it.type === "material") router.push(`/materials/${it.id}${it.unit_id ? `?unit=${it.unit_id}` : ""}`);
+    else if (it.type === "material") router.push(`/materials/view?id=${it.id}${it.unit_id ? `&unit=${it.unit_id}` : ""}`);
     else router.push(it.source_note_id ? `/notes?id=${it.source_note_id}` : "/review?tab=cards");
   };
 

@@ -7,6 +7,12 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
+/** 旧格式 /materials/<id>?unit=… 转成 /materials/view?id=…&unit=… */
+const appHref = (href: string) => {
+  const m = href.match(/^\/materials\/([0-9a-f-]{36})(?:\?unit=([0-9a-f-]+))?/);
+  return m ? `/materials/view?id=${m[1]}${m[2] ? `&unit=${m[2]}` : ""}` : href;
+};
+
 /** 渲染 Markdown：GFM 表格 / 脚注、LaTeX 公式、代码高亮。原始 HTML 不渲染。 */
 export function Markdown({ text, className = "" }: { text: string; className?: string }) {
   return (
@@ -17,7 +23,7 @@ export function Markdown({ text, className = "" }: { text: string; className?: s
         components={{
           a: ({ href = "", children, ...rest }) =>
             href.startsWith("/") ? (
-              <Link href={href}>{children}</Link>
+              <Link href={appHref(href)}>{children}</Link>
             ) : href.startsWith("#") ? (
               <a href={href} {...rest}>
                 {children}

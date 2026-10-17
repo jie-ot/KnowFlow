@@ -1,0 +1,2 @@
+# 打包桌面应用用（packaging/build_desktop.py）
+pyinstaller==6.22.3

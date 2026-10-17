@@ -1,0 +1,2 @@
+# 桌面窗口（python run.py --app）额外需要的依赖
+pywebview==6.2.1

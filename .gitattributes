@@ -1,6 +1,7 @@
 # 统一用 LF 换行，避免 Windows 检出后 start.sh 因 CRLF 无法运行
 * text=auto eol=lf
-*.bat text eol=crlf
+# .bat 以 CRLF 原样保存，下载 ZIP 时也能直接运行
+*.bat -text
 *.png binary
 *.jpg binary
 *.pdf binary

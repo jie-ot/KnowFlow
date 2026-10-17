@@ -2,7 +2,7 @@
 
 import { ArrowLeft, ExternalLink, Pencil, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
 import { API, api, ApiError, fetcher, Material, Note, Unit } from "@/lib/api";
@@ -22,8 +22,9 @@ export default function MaterialPage() {
 }
 
 function MaterialDetail() {
-  const { id } = useParams<{ id: string }>();
-  const focus = useSearchParams().get("unit");
+  const params = useSearchParams();
+  const id = params.get("id") || "";
+  const focus = params.get("unit");
   const { data: m, mutate } = useSWR<Material>(`/api/materials/${id}`, (p: string) => api<Material>(p), {
     refreshInterval: (d) => (d && (d.status === "extracting" || d.status === "uploaded") ? 1000 : 0),
   });

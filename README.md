@@ -1,53 +1,159 @@
 # KnowFlow
 
-面向多学科学习的 AI 知识管理与智能复习助手（基础版）。单用户、在本机运行的网页应用：
+**面向多学科学习的 AI 知识管理与智能复习助手**
 
-- **笔记**：Markdown 编辑与预览，支持 LaTeX 公式、代码高亮、表格；学科与标签；自动保存；回收站保留 30 天；修订历史可撤销 AI 修改。
-- **资料**：上传 PDF、PPTX、DOCX、TXT、MD、代码、图片，按页、幻灯片、段落、行切成片段；勾选片段让 AI 整理成带出处的笔记，点出处能回到原文位置。
-- **AI**：整理、摘要（100 / 300 字）、提炼知识点卡片、资料成笔记、计划拆任务。结果都先进对比或审核视图，确认后才写入；整理和摘要会自动核对数字、公式、代码是否被改。
-- **复习**：SM-2 间隔重复，凌晨 4 点前算前一天；空格翻面，1 / 2 / 3 自评。
-- **计划**：你定目标、截止日和每天可用时间，AI 只出草稿；超出当天预算或越过截止日的任务不能采纳。
-- **检索与导出**：⌘K 全局搜索；单篇导出 .md；多篇导出为一个离线 HTML（可打印）。
+KnowFlow 是一个在你自己电脑上运行的网页应用。你可以在里面写 Markdown 笔记，也可以把课件、讲义、代码交给 AI 整理成带出处的笔记，再从笔记中提炼知识点卡片，按 SM-2 间隔重复算法安排复习。学习计划也可以交给 AI 拆成任务，但日期和进度始终由你决定。
 
-合并了两份需求文档，取舍见 [docs/合并需求说明.md](docs/合并需求说明.md)。
+所有数据都保存在本机。只有在你点击 AI 功能时，才会把相关内容发送给你自己配置的大模型服务商。
 
-## 启动
+---
 
-需要 Node.js 20+ 和 Python 3.11+（有 [uv](https://docs.astral.sh/uv/) 时 macOS/Linux 会优先用 uv）。
+## 功能
 
-macOS / Linux：
+| 模块 | 能做什么 |
+| --- | --- |
+| **笔记** | Markdown 编辑，可在阅读、分栏、编辑三种视图间切换；支持 LaTeX 公式、代码高亮和表格；按学科和标签分类；自动保存；修订历史可以撤销 AI 修改；删除的笔记在回收站保留 30 天 |
+| **资料** | 上传 PDF、PPTX、DOCX、TXT、MD、代码、图片；按页、幻灯片、段落、表格行、行号切成片段；勾选片段后让 AI 整理成笔记，每节都标出处，点出处可以回到原文位置 |
+| **AI 整理与总结** | 流式生成；左边原文、右边结果对照查看，确认后才写入笔记；自动核对数字、公式、代码有没有被改掉或漏掉；摘要分约 100 字和约 300 字两档 |
+| **知识点卡片** | AI 从笔记中提炼 5–20 个知识点，你逐条修改后再加入卡组；也可以手动建卡；遗忘 3 次以上的卡片列为薄弱知识点 |
+| **复习** | SM-2 间隔重复，凌晨 4 点之前算前一天；空格键翻面，按 1 / 2 / 3 自评，每个按钮都显示下次复习在几天后 |
+| **学习计划** | 填写目标、当前进度、截止日、每天可用时间后，AI 拆成任务草稿；任务日期超出截止日或某天超出时间预算的，不能采纳 |
+| **检索与导出** | ⌘K / Ctrl+K 全局搜索笔记、资料和卡片；单篇笔记导出为 .md；多篇笔记导出为一个可离线打开、可打印的 HTML |
+
+## 技术栈
+
+- **前端**：Next.js 16、React 19、Tailwind CSS 4，编译成静态网页后由后端一起提供；Markdown 用 react-markdown，公式用 KaTeX，代码高亮用 highlight.js
+- **后端**：FastAPI、SQLite；pypdf、python-pptx、python-docx 解析资料；latex2mathml、Pygments 用于导出 HTML
+- **桌面端**：pywebview 打开独立窗口，PyInstaller 打包成 Mac 的 `.app` 和 Windows 的 `.exe`
+- **大模型**：任何 OpenAI 兼容接口，例如 DeepSeek、阿里云百炼、Kimi
+
+## 使用
+
+KnowFlow 有三种用法，用的是同一套代码和同一份数据：
+
+| 用法 | 需要装什么 | 怎么启动 |
+| --- | --- | --- |
+| **桌面应用** | 什么都不用装 | 下载 `KnowFlow-macOS.zip` 或 `KnowFlow-Windows.zip`，解压后双击 |
+| **网页端** | Python 3.11+ | `python run.py`，自动用浏览器打开 |
+| **桌面窗口（源码运行）** | Python 3.11+ | `python run.py --app`，用独立窗口打开 |
+
+### 桌面应用
+
+在仓库的 **Releases** 页面下载，或在 **Actions › 打包桌面应用** 的运行记录底部下载 Artifacts。
+
+- **macOS**：解压得到 `KnowFlow.app`，拖进“应用程序”文件夹。因为没有 Apple 开发者签名，第一次打开要右键点它，选“打开”，再点“打开”；或者在终端运行 `xattr -dr com.apple.quarantine /Applications/KnowFlow.app`。目前打的是 Apple 芯片版本。
+- **Windows**：解压后双击 `KnowFlow\KnowFlow.exe`。如果 SmartScreen 提示“已保护你的电脑”，点“更多信息”›“仍要运行”。窗口依赖系统自带的 WebView2，Windows 10/11 一般已经装好。
+
+桌面应用的数据存放在：macOS 的 `~/Library/Application Support/KnowFlow`，Windows 的 `%APPDATA%\KnowFlow`。
+
+### 从源码运行
+
+只需要 Python 3.11 或更新版本，不需要 Node.js。
 
 ```bash
+git clone https://github.com/jie-ot/KnowFlow.git
 cd KnowFlow
-./start.sh          # 开发模式，改代码会自动刷新
-./start.sh prod     # 生产模式，页面切换更快
+python run.py          # 网页端（macOS 上可能要写 python3）
+python run.py --app    # 桌面窗口
 ```
 
-Windows：双击 `start.bat`，或在命令行里运行它。安装 Python 时要勾选“Add python.exe to PATH”。后端和前端会各开一个窗口，关掉这两个窗口就退出。
+Windows 也可以双击 `start.bat`，macOS / Linux 也可以运行 `./start.sh`，效果和 `python run.py` 一样。
 
-首次运行会安装依赖，然后自动打开 http://127.0.0.1:3000 。第一次打开有两门示例学科、几张今天到期的卡片和一个示例计划，删掉示例学科即可清空。
+第一次运行会在 `backend/.venv` 里装好依赖，大约 1–2 分钟；之后启动只要几秒。默认使用清华 pip 镜像，想用官方源：`PIP_INDEX=https://pypi.org/simple python run.py`。8000 端口被占用时会自动换一个端口。
 
-脚本默认用清华 pip 源和 npmmirror npm 源；想用官方源：
-
-```bash
-PIP_INDEX=https://pypi.org/simple NPM_REGISTRY=https://registry.npmjs.org ./start.sh
-```
+首次启动会生成两门示例学科、几张今天到期的卡片和一个示例计划。删除示例学科，它下面的内容会一起清除。
 
 ## 连接大模型
 
-设置 › 大模型 › 添加配置。默认填好了 DeepSeek 的 Base URL（`https://api.deepseek.com`）和模型名 `deepseek-flash`，只需填 API Key，点“测试连接”。任何 OpenAI 兼容接口都可以（阿里云百炼、Kimi 等）。
+打开 **设置 › 大模型 › 添加配置**。表单已经预填 DeepSeek 的 Base URL（`https://api.deepseek.com`）和模型名 `deepseek-flash`，填入你的 API Key，点“测试连接”即可。模型名可能随服务商更新而变化，以服务商文档为准。
 
-API Key 只存在本机 `backend/data/knowflow.db`，页面只显示后 4 位，不写日志。第一次使用 AI 前会提示内容将发送给哪个服务商。
+- API Key 只保存在本机数据库里，页面上只显示后 4 位，不写入日志，前端也拿不到完整 Key。
+- 第一次使用 AI 前会弹窗说明内容将发送给哪个服务商，同意后才发送；更换 Base URL 后需要重新确认。
+- 每次请求最多 16000 字；60 秒没有响应或总时长超过 120 秒就停止。这几个数值可以在 **设置 › AI 选项** 里修改。
 
-## 目录
+## 项目结构
 
 ```
-backend/    FastAPI + SQLite（数据在 backend/data/）
-  app/logic/  SM-2、逻辑日、资料解析、检索、导出、计划校验、事实核对
-  app/llm/    OpenAI 兼容网关（流式、超时、错误映射）与提示词
-  tests/      关键流程测试：cd backend && uv run pytest
-frontend/   Next.js + Tailwind
-docs/       合并需求说明
+KnowFlow/
+├── run.py                   一条命令启动（装依赖、起服务、打开浏览器或窗口）
+├── start.sh / start.bat     双击或命令行启动，等同于 python run.py
+├── docs/合并需求说明.md      两份需求文档如何合并、做了哪些、没做哪些
+├── backend/                 FastAPI + SQLite
+│   ├── app/
+│   │   ├── main.py          入口：/api 接口 + 前端静态网页、本机来源校验
+│   │   ├── launcher.py      启动服务并用浏览器或桌面窗口打开
+│   │   ├── web/             编译好的前端（由 npm run build 生成，需要提交）
+│   │   ├── routers/         接口：学科、笔记、资料、卡片与复习、计划、AI、检索导出
+│   │   ├── logic/           SM-2、逻辑日、资料解析、检索、导出、计划校验、事实核对
+│   │   └── llm/             大模型网关（流式、超时、错误映射）与提示词
+│   ├── requirements.txt     后端依赖（锁定版本）
+│   ├── requirements-desktop.txt  桌面窗口依赖（pywebview）
+│   └── tests/               自动化测试
+├── frontend/                Next.js 源码
+├── packaging/               桌面应用打包脚本与图标
+└── .github/workflows/       自动打包 Mac / Windows 桌面应用
 ```
 
-后端接口文档：启动后打开 http://127.0.0.1:8000/docs 。
+后端接口文档：启动后打开 `http://127.0.0.1:8000/docs`。
+
+## 开发
+
+改前端时需要 Node.js 20+，前后端分开跑，前端改了会热更新：
+
+```bash
+# 终端 1：后端
+cd backend
+.venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port 8000    # Windows: .venv\Scripts\uvicorn ...
+
+# 终端 2：前端，打开 http://127.0.0.1:3000
+cd frontend
+npm install
+npm run dev
+```
+
+**改完前端提交前，运行一次 `npm run build`**。它会把编译结果复制到 `backend/app/web/`，这样别人只装 Python 也能看到最新界面。
+
+运行测试：
+
+```bash
+cd backend && .venv/bin/python -m pytest
+```
+
+测试覆盖：SM-2 的五张示例卡片（需求文档用例 AC-07）、凌晨 1:30 的复习算作前一天（AC-14）、整理后采纳再撤销、提炼卡片后加入卡组并复习、回收站、检索、导出的 HTML 不含脚本、接口返回中不出现完整 API Key、拒绝非本机来源的请求、资料上传与格式校验、计划超出时间预算的校验。AI 部分用模拟的大模型接口测试。
+
+### 打包桌面应用
+
+推荐用 GitHub Actions：在仓库的 **Actions › 打包桌面应用** 点 **Run workflow**，几分钟后同时得到 Mac 和 Windows 两个版本；推送 `v` 开头的标签（如 `git tag v0.2.0 && git push origin v0.2.0`）会自动发布到 Releases。
+
+也可以在本机打当前系统的版本：
+
+```bash
+python run.py --app                                   # 先装好依赖并确认窗口能打开
+backend/.venv/bin/pip install -r packaging/requirements-build.txt
+backend/.venv/bin/python packaging/build_desktop.py   # 生成 dist/KnowFlow.app 或 dist/KnowFlow/
+```
+
+## 数据与隐私
+
+- 数据存在 `backend/data/` 里，包括笔记数据库和上传的资料原件。复制这个文件夹就是备份，换电脑时把它拷过去即可。
+- 后端只监听 `127.0.0.1`，同一局域网的其他设备访问不到；不是来自本机前端的写请求会被拒绝。
+- `backend/data/`、虚拟环境和打包产物都已写进 `.gitignore`，不会被提交到仓库。
+
+## 常见问题
+
+**第一次运行一直在“安装依赖”**
+需要下载约 40 个 Python 包，网络慢时会久一点。中途按 Ctrl+C 中断也没关系，下次运行会接着装。
+
+**Windows 上提示找不到 Python，或输入 python 打开了微软商店**
+从 python.org 安装 Python，安装时勾选 “Add python.exe to PATH”；再到 设置 › 应用 › 高级应用设置 › 应用执行别名，关掉 python.exe 和 python3.exe。
+
+**想清理安装的依赖**
+删除 `backend/.venv` 即可，源代码和 `backend/data/` 不受影响。
+
+## 文档
+
+- [合并需求说明](docs/合并需求说明.md)：两份需求文档的冲突取舍、已实现功能、暂不实现的功能和限额来源
+
+## 暂未实现
+
+双链与反向链接、多篇笔记生成提纲、知识关系图、周期性学习总结、图片和扫描件 OCR、全量备份与恢复。原因见合并需求说明第 3 节。

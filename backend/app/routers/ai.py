@@ -457,7 +457,7 @@ def _parse_compose(data: dict[str, Any], aliases: dict[str, dict[str, Any]]) -> 
         ord_ = number[alias]
         sources.append({"ord": ord_, **info, "precision": "unit"})
         defs.append(f"[^{ord_}]: [《{info['material_name']}》{info['label']}]"
-                    f"(/materials/{info['material_id']}?unit={info['unit_id']})")
+                    f"(/materials/view?id={info['material_id']}&unit={info['unit_id']})")
     content = "\n\n".join(parts) + ("\n\n" + "\n".join(defs) if defs else "")
     title = str(data.get("title") or "").strip()[:100] or "资料整理笔记"
     return {"title": title, "content": content, "sources": sources, "sections": sections}, warnings

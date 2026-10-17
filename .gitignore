@@ -16,3 +16,9 @@ frontend/tsconfig.tsbuildinfo
 Thumbs.db
 .idea/
 .vscode/
+
+# 前端编译中间产物（编译结果会复制到 backend/app/web，那个目录要提交）
+frontend/out/
+# 桌面应用打包产物
+build/
+dist/

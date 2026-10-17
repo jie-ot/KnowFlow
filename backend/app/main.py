@@ -1,19 +1,24 @@
-"""KnowFlow 后端入口。只监听本机（start.sh 用 127.0.0.1 启动）。"""
+"""KnowFlow 后端入口：同时提供 /api 接口和编译好的前端网页。只监听 127.0.0.1。"""
 
 from __future__ import annotations
 
+import re
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import config
 from .db import connect, init_db, now_iso
-from .errors import install_handlers
+from .errors import AppError, install_handlers
 from .routers import ai, cards, courses, materials, misc, notes, plans
 from .seed import seed
+
+
+_LOCAL = re.compile(config.LOCAL_ORIGIN_REGEX)
 
 
 class GuardMiddleware:
@@ -30,7 +35,7 @@ class GuardMiddleware:
         scope.setdefault("state", {})["request_id"] = request_id
         headers = dict(scope.get("headers") or [])
         origin = headers.get(b"origin", b"").decode()
-        if scope["method"] not in ("GET", "HEAD", "OPTIONS") and origin and origin not in config.ALLOWED_ORIGINS:
+        if scope["method"] not in ("GET", "HEAD", "OPTIONS") and origin and not _LOCAL.match(origin):
             body = b'{"error":{"code":"ORIGIN_FORBIDDEN","message":"\xe5\x8f\xaa\xe6\x8e\xa5\xe5\x8f\x97\xe6\x9c\xac\xe6\x9c\xba\xe5\x89\x8d\xe7\xab\xaf\xe7\x9a\x84\xe8\xaf\xb7\xe6\xb1\x82","retryable":false,"field":null}}'
             await send({"type": "http.response.start", "status": 403,
                         "headers": [(b"content-type", b"application/json")]})
@@ -74,7 +79,7 @@ app = FastAPI(title="KnowFlow API", version=config.APP_VERSION, lifespan=lifespa
 app.add_middleware(GuardMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.ALLOWED_ORIGINS,
+    allow_origin_regex=config.LOCAL_ORIGIN_REGEX,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "X-Request-ID"],
@@ -82,3 +87,13 @@ app.add_middleware(
 install_handlers(app)
 for module in (courses, notes, materials, cards, plans, ai, misc):
     app.include_router(module.router)
+
+
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PATCH", "PUT", "DELETE"], include_in_schema=False)
+def api_not_found(path: str) -> None:
+    raise AppError(404, "NOT_FOUND", "请求的接口不存在")
+
+
+# 前端静态网页（npm run build 生成到 app/web/）；开发时前端由 next dev 单独提供
+if config.WEB_DIR.exists():
+    app.mount("/", StaticFiles(directory=config.WEB_DIR, html=True), name="web")

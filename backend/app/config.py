@@ -6,24 +6,32 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # backend/
-DATA_DIR = Path(os.environ.get("KNOWFLOW_DATA_DIR", BASE_DIR / "data"))
+WEB_DIR = Path(__file__).resolve().parent / "web"  # 编译好的前端静态网页
+
+
+def _default_data_dir() -> Path:
+    """源码运行时数据放在 backend/data；打包成桌面应用后放到系统的用户数据目录。"""
+    if getattr(sys, "frozen", False):
+        if sys.platform == "darwin":
+            return Path.home() / "Library" / "Application Support" / "KnowFlow"
+        if os.name == "nt":
+            return Path(os.environ.get("APPDATA", Path.home())) / "KnowFlow"
+        return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "KnowFlow"
+    return BASE_DIR / "data"
+
+
+DATA_DIR = Path(os.environ.get("KNOWFLOW_DATA_DIR", _default_data_dir()))
 DB_PATH = DATA_DIR / "knowflow.db"
 MATERIALS_DIR = DATA_DIR / "materials"
 
-# 只允许本机前端访问（同学文档 NFR-10）
-ALLOWED_ORIGINS = [
-    o.strip()
-    for o in os.environ.get(
-        "KNOWFLOW_ALLOWED_ORIGINS",
-        "http://localhost:3000,http://127.0.0.1:3000",
-    ).split(",")
-    if o.strip()
-]
+# 只允许本机页面访问（同学文档 NFR-10）：127.0.0.1 或 localhost 的任意端口
+LOCAL_ORIGIN_REGEX = r"^http://(127\.0\.0\.1|localhost)(:\d+)?$"
 
 # 上传限额（同学文档 NFR-01）
 MAX_FILES_PER_BATCH = 5
