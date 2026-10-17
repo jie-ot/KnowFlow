@@ -1,0 +1,440 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+
+/* KnowFlow：Apple / Notion 式的安静界面，唯一醒目的物件是“复习卡片”。 */
+:root {
+  --paper: #ffffff;
+  --canvas: #f5f4f1;
+  --ink: #2e2c29;
+  --muted: #7a766f;
+  --faint: #a9a59d;
+  --rule: #e8e5df;
+  --hover: #efede8;
+  --accent: #2e6b5a;
+  --accent-ink: #ffffff;
+  --accent-soft: #e4efea;
+  --mark: #ffe8a1;
+  --warn: #b7791f;
+  --warn-soft: #fbf1dc;
+  --bad: #c2554d;
+  --bad-soft: #f8e5e3;
+  --card-shadow: 0 1px 0 rgba(46, 44, 41, 0.04), 0 12px 32px -12px rgba(46, 44, 41, 0.18);
+  --overlay: rgba(30, 28, 25, 0.28);
+  --code-bg: #f7f6f3;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #1d1c1a;
+    --canvas: #242320;
+    --ink: #ebe9e4;
+    --muted: #a19d95;
+    --faint: #75716a;
+    --rule: #34322e;
+    --hover: #2d2b28;
+    --accent: #6fb39c;
+    --accent-ink: #12221d;
+    --accent-soft: #23362f;
+    --mark: #5c4c1c;
+    --warn: #dfac58;
+    --warn-soft: #3a3020;
+    --bad: #e08178;
+    --bad-soft: #3b2522;
+    --card-shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 16px 36px -14px rgba(0, 0, 0, 0.7);
+    --overlay: rgba(0, 0, 0, 0.5);
+    --code-bg: #262522;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-canvas: var(--canvas);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-rule: var(--rule);
+  --color-hover: var(--hover);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Helvetica Neue", sans-serif;
+  --font-serif: "Songti SC", "STSong", "Noto Serif SC", "New York", Georgia, serif;
+  --font-mono: "SF Mono", Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium whitespace-nowrap select-none transition-colors disabled:opacity-45 disabled:pointer-events-none;
+    color: var(--ink);
+  }
+  .btn:hover {
+    background: var(--hover);
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .btn-primary:hover {
+    background: color-mix(in oklab, var(--accent) 88%, black);
+  }
+  .btn-outline {
+    border: 1px solid var(--rule);
+    background: var(--paper);
+  }
+  .btn-danger {
+    color: var(--bad);
+  }
+  .btn-icon {
+    @apply w-8 px-0;
+  }
+  .input {
+    @apply w-full h-9 px-3 rounded-lg text-[14px] outline-none transition-shadow;
+    background: var(--paper);
+    border: 1px solid var(--rule);
+  }
+  .input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  textarea.input {
+    @apply h-auto py-2 leading-relaxed;
+  }
+  .label {
+    @apply block text-[12px] font-medium mb-1.5;
+    color: var(--muted);
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 h-6 px-2 rounded-md text-[12px];
+    background: var(--hover);
+    color: var(--muted);
+  }
+  .seg {
+    @apply inline-flex p-0.5 rounded-lg;
+    background: var(--hover);
+  }
+  .seg > button {
+    @apply h-7 px-2.5 rounded-md text-[12px] font-medium;
+    color: var(--muted);
+  }
+  .seg > button[data-on="true"] {
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  }
+  .section-title {
+    @apply text-[13px] font-semibold mb-3;
+    color: var(--muted);
+  }
+  .row-hover:hover {
+    background: var(--hover);
+  }
+}
+
+/* 复习卡片：纸面 + 顶部学科色细线，叠放时露出后面两张 */
+.index-card {
+  position: relative;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  box-shadow: var(--card-shadow);
+}
+.index-card::before {
+  content: "";
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  top: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--course, var(--accent));
+  opacity: 0.85;
+}
+.card-stack {
+  position: relative;
+}
+.card-stack::before,
+.card-stack::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+}
+.card-stack::before {
+  transform: translate(10px, 10px) rotate(1.6deg);
+  opacity: 0.55;
+}
+.card-stack::after {
+  transform: translate(5px, 5px) rotate(0.8deg);
+  opacity: 0.8;
+}
+.card-stack > * {
+  position: relative;
+  z-index: 1;
+}
+
+.flip {
+  perspective: 1400px;
+}
+.flip-inner {
+  transition: transform 0.45s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transform-style: preserve-3d;
+}
+.flip-inner[data-flipped="true"] {
+  transform: rotateY(180deg);
+}
+.flip-face {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.flip-back {
+  transform: rotateY(180deg);
+}
+
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.99);
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+.anim-sheet {
+  animation: sheet-in 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.anim-fade {
+  animation: fade-in 0.18s ease-out;
+}
+@keyframes caret {
+  50% {
+    opacity: 0;
+  }
+}
+.typing::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--accent);
+  animation: caret 1s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Markdown 正文 */
+.prose-kf {
+  font-size: 15px;
+  line-height: 1.8;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.prose-kf > :first-child {
+  margin-top: 0;
+}
+.prose-kf h1,
+.prose-kf h2,
+.prose-kf h3,
+.prose-kf h4 {
+  font-weight: 650;
+  line-height: 1.4;
+  margin: 1.6em 0 0.5em;
+}
+.prose-kf h1 {
+  font-size: 1.45em;
+}
+.prose-kf h2 {
+  font-size: 1.25em;
+}
+.prose-kf h3 {
+  font-size: 1.08em;
+}
+.prose-kf p {
+  margin: 0 0 0.9em;
+}
+.prose-kf ul,
+.prose-kf ol {
+  margin: 0 0 0.9em;
+  padding-left: 1.4em;
+}
+.prose-kf ul {
+  list-style: disc;
+}
+.prose-kf ol {
+  list-style: decimal;
+}
+.prose-kf li {
+  margin: 0.2em 0;
+}
+.prose-kf a {
+  color: var(--accent);
+}
+.prose-kf blockquote {
+  margin: 0 0 1em;
+  padding: 0.5em 1em;
+  border-left: 3px solid var(--accent);
+  background: var(--canvas);
+  border-radius: 0 8px 8px 0;
+  color: var(--ink);
+}
+.prose-kf blockquote p:last-child {
+  margin: 0;
+}
+.prose-kf table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 1em;
+  font-size: 14px;
+  display: block;
+  overflow-x: auto;
+}
+.prose-kf th,
+.prose-kf td {
+  border: 1px solid var(--rule);
+  padding: 6px 10px;
+  text-align: left;
+}
+.prose-kf th {
+  background: var(--canvas);
+  font-weight: 600;
+}
+.prose-kf code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.prose-kf pre {
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0 0 1em;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.prose-kf pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+.prose-kf hr {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 1.6em 0;
+}
+.prose-kf .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+}
+.prose-kf section.footnotes {
+  margin-top: 2em;
+  padding-top: 0.8em;
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+  color: var(--muted);
+}
+.prose-kf section.footnotes h2 {
+  font-size: 13px;
+  margin: 0 0 0.4em;
+}
+.prose-kf sup a {
+  text-decoration: none;
+  font-weight: 600;
+  padding: 0 1px;
+}
+.prose-kf mark {
+  background: var(--mark);
+  color: inherit;
+  border-radius: 3px;
+}
+
+/* 代码高亮（highlight.js 的类名，配色跟随主题） */
+.hljs-comment,
+.hljs-quote {
+  color: var(--faint);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-meta {
+  color: #8250a0;
+}
+.hljs-string,
+.hljs-attr,
+.hljs-symbol {
+  color: #3d8b5f;
+}
+.hljs-number,
+.hljs-literal {
+  color: #c7742c;
+}
+.hljs-title,
+.hljs-section,
+.hljs-function .hljs-title {
+  color: #3e6fb0;
+}
+.hljs-type,
+.hljs-params {
+  color: var(--ink);
+}
+@media (prefers-color-scheme: dark) {
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-built_in,
+  .hljs-meta {
+    color: #c39be0;
+  }
+  .hljs-string,
+  .hljs-attr {
+    color: #8cc9a5;
+  }
+  .hljs-number,
+  .hljs-literal {
+    color: #e6a96b;
+  }
+  .hljs-title,
+  .hljs-section {
+    color: #8fb2e6;
+  }
+}

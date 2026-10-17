@@ -1,7 +1,28 @@
 [project]
-name = "backend"
+name = "knowflow-backend"
 version = "0.1.0"
-description = "Add your description here"
+description = "KnowFlow 后端：FastAPI + SQLite"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi>=0.143.2",
+    "httpx>=0.28.1",
+    "latex2mathml>=3.81.1",
+    "markdown-it-py>=4.2.0",
+    "mdit-py-plugins>=0.6.1",
+    "pygments>=2.21.0",
+    "pypdf[crypto]>=6.21.0",
+    "python-docx>=1.2.0",
+    "python-multipart>=0.0.32",
+    "python-pptx>=1.0.2",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
