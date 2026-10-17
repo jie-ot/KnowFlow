@@ -1,14 +1,57 @@
+<div align="center">
+
+<img src="docs/images/logo.svg" width="88" alt="KnowFlow" />
+
 # KnowFlow
 
 **面向多学科学习的 AI 知识管理与智能复习助手**
 
-KnowFlow 是一个在你自己电脑上运行的网页应用。你可以在里面写 Markdown 笔记，也可以把课件、讲义、代码交给 AI 整理成带出处的笔记，再从笔记中提炼知识点卡片，按 SM-2 间隔重复算法安排复习。学习计划也可以交给 AI 拆成任务，但日期和进度始终由你决定。
+笔记 · 资料整理 · 双链与知识图谱 · 间隔重复复习 · 学习计划 · 本机运行
 
-所有数据都保存在本机。只有在你点击 AI 功能时，才会把相关内容发送给你自己配置的大模型服务商。
+[![Release](https://img.shields.io/github/v/release/jie-ot/KnowFlow?style=flat-square&color=2e6b5a&label=%E7%89%88%E6%9C%AC)](https://github.com/jie-ot/KnowFlow/releases/latest)
+[![Build](https://img.shields.io/github/actions/workflow/status/jie-ot/KnowFlow/desktop.yml?style=flat-square&label=%E6%89%93%E5%8C%85)](https://github.com/jie-ot/KnowFlow/actions/workflows/desktop.yml)
+[![Downloads](https://img.shields.io/github/downloads/jie-ot/KnowFlow/total?style=flat-square&color=c7742c&label=%E4%B8%8B%E8%BD%BD)](https://github.com/jie-ot/KnowFlow/releases)
+[![Platform](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20macOS-6b7280?style=flat-square)](#-安装与启动)
+[![Stars](https://img.shields.io/github/stars/jie-ot/KnowFlow?style=flat-square&color=e3b341)](https://github.com/jie-ot/KnowFlow/stargazers)
+
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js_16-000000?style=flat-square&logo=nextdotjs&logoColor=white)
+![React](https://img.shields.io/badge/React_19-149ECA?style=flat-square&logo=react&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS_4-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white)
+![DeepSeek](https://img.shields.io/badge/AI-DeepSeek%20%2F%20OpenAI%20%E5%85%BC%E5%AE%B9-4D6BFE?style=flat-square)
+![OCR](https://img.shields.io/badge/OCR-RapidOCR%20%E6%9C%AC%E6%9C%BA%E8%AF%86%E5%88%AB-8250a0?style=flat-square)
+
+[安装](#-安装与启动) · [功能](#-功能) · [截图](#-截图) · [连接大模型](#-连接大模型) · [开发](#-开发) · [常见问题](#-常见问题)
+
+</div>
 
 ---
 
-## 功能
+KnowFlow 是一个在你自己电脑上运行的学习应用。你可以在里面写 Markdown 笔记，用 `[[双链]]` 把知识点连成网；把课件、讲义、板书照片交给 AI 整理成带出处的笔记；从笔记中提炼知识点卡片，按 SM-2 间隔重复算法安排复习；学习计划可以交给 AI 拆成任务，在月历上拖动安排，再配合番茄钟专注完成。
+
+> 🔒 所有数据都保存在本机。只有你点击 AI 功能时，才会把那一次需要的内容发送给你自己配置的大模型服务商。
+
+## 📸 截图
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/home.png" alt="今天" /><p align="center"><b>今天</b>：快速记录、首页翻卡、复习热力图</p></td>
+    <td width="50%"><img src="docs/images/notes.png" alt="笔记" /><p align="center"><b>笔记</b>：Markdown、公式、双链与反向链接</p></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/graph.png" alt="知识图谱" /><p align="center"><b>知识图谱</b>：拖动连线、AI 推荐连线</p></td>
+    <td><img src="docs/images/calendar.png" alt="计划月历" /><p align="center"><b>计划月历</b>：拖动改期、每日到期卡片</p></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/review.png" alt="复习" /><p align="center"><b>复习</b>：SM-2 间隔重复，键盘 1 / 2 / 3 自评</p></td>
+    <td><img src="docs/images/home-dark.png" alt="深色模式" /><p align="center"><b>深色模式</b>：浅色 / 深色 / 跟随系统</p></td>
+  </tr>
+</table>
+
+## ✨ 功能
 
 | 模块 | 能做什么 |
 | --- | --- |
@@ -41,14 +84,14 @@ KnowFlow 是一个在你自己电脑上运行的网页应用。你可以在里�
 | `[[` | 链接到另一篇笔记 |
 | 空格，1 / 2 / 3 | 复习时翻面、自评 |
 
-## 技术栈
+## 🧱 技术栈
 
 - **前端**：Next.js 16、React 19、Tailwind CSS 4，编译成静态网页后由后端一起提供；Markdown 用 react-markdown，公式用 KaTeX，代码高亮用 highlight.js
 - **后端**：FastAPI、SQLite；pypdf、python-pptx、python-docx 解析资料；latex2mathml、Pygments 用于导出 HTML
 - **桌面端**：pywebview 打开独立窗口，PyInstaller 打包成 Mac 的 `.app` 和 Windows 的 `.exe`
 - **大模型**：任何 OpenAI 兼容接口，例如 DeepSeek、阿里云百炼、Kimi
 
-## 使用
+## 🚀 安装与启动
 
 KnowFlow 有三种用法，用的是同一套代码和同一份数据：
 
@@ -98,7 +141,7 @@ Windows 也可以双击 `start.bat`，macOS / Linux 也可以运行 `./start.sh`
 
 首次启动会生成两门示例学科、几张今天到期的卡片和一个示例计划。删除示例学科，它下面的内容会一起清除。
 
-## 连接大模型
+## 🤖 连接大模型
 
 打开 **设置 › 大模型 › 添加配置**。表单已经预填 DeepSeek 的 Base URL（`https://api.deepseek.com`）和模型名 `deepseek-flash`，填入你的 API Key，点“测试连接”即可。模型名可能随服务商更新而变化，以服务商文档为准。
 
@@ -106,7 +149,7 @@ Windows 也可以双击 `start.bat`，macOS / Linux 也可以运行 `./start.sh`
 - 第一次使用 AI 前会弹窗说明内容将发送给哪个服务商，同意后才发送；更换 Base URL 后需要重新确认。
 - 每次请求最多 16000 字；60 秒没有响应或总时长超过 120 秒就停止。这几个数值可以在 **设置 › AI 选项** 里修改。
 
-## 项目结构
+## 📁 项目结构
 
 ```
 KnowFlow/
@@ -131,7 +174,7 @@ KnowFlow/
 
 后端接口文档：启动后打开 `http://127.0.0.1:8000/docs`。
 
-## 开发
+## 🔧 开发
 
 改前端时需要 Node.js 20+，前后端分开跑，前端改了会热更新：
 
@@ -168,13 +211,13 @@ backend/.venv/bin/pip install -r packaging/requirements-build.txt
 backend/.venv/bin/python packaging/build_desktop.py   # 生成 dist/KnowFlow.app 或 dist/KnowFlow/
 ```
 
-## 数据与隐私
+## 🔒 数据与隐私
 
 - 数据存在 `backend/data/` 里（桌面应用在 `%APPDATA%\KnowFlow` 或 `~/Library/Application Support/KnowFlow`），包括笔记数据库和上传的资料原件。备份推荐用 设置 › 备份 › 导出备份，换电脑时在同一处选择备份文件恢复；直接复制整个数据文件夹也可以。
 - 后端只监听 `127.0.0.1`，同一局域网的其他设备访问不到；不是来自本机前端的写请求会被拒绝。
 - `backend/data/`、虚拟环境和打包产物都已写进 `.gitignore`，不会被提交到仓库。
 
-## 常见问题
+## ❓ 常见问题
 
 **第一次运行一直在“安装依赖”**
 需要下载约 40 个 Python 包，网络慢时会久一点。中途按 Ctrl+C 中断也没关系，下次运行会接着装。
@@ -188,10 +231,10 @@ zip 是用浏览器下载、资源管理器解压的，文件带着“来自互�
 **想清理安装的依赖**
 删除 `backend/.venv` 即可，源代码和 `backend/data/` 不受影响。
 
-## 文档
+## 📚 文档
 
 - [合并需求说明](docs/合并需求说明.md)：两份需求文档的冲突取舍、已实现功能、暂不实现的功能和限额来源
 
-## 暂未实现
+## 🗺️ 暂未实现
 
 多篇笔记生成提纲。原因见合并需求说明第 3 节。

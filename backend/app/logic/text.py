@@ -34,6 +34,7 @@ def plain_excerpt(markdown: str, limit: int = 120) -> str:
     text = re.sub(r"\[\^\d+\]:.*", " ", text)
     text = re.sub(r"\[\^\d+\]", "", text)
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)
+    text = re.sub(r"\[\[([^\[\]\n|]+)(?:\|([^\[\]\n]*))?\]\]", lambda m: (m.group(2) or m.group(1)).strip(), text)
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s*", "", text, flags=re.M)
     text = text.replace("摘要：", "", 1) if text.startswith("> 摘要：") or text.lstrip("> ").startswith("摘要：") else text
