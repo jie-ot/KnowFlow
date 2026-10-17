@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import sys
 import threading
@@ -54,6 +55,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-open", action="store_true", help="只启动服务，不自动打开浏览器")
     args = parser.parse_args(argv)
 
+    # Windows 打包成无控制台程序后 sys.stdout / sys.stderr 是 None，uvicorn 的日志会因此崩溃
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
     if not config.WEB_DIR.exists():
         print("没有找到编译好的前端（backend/app/web）。请在 frontend 目录运行 npm run build，"
               "或者用 npm run dev 单独启动前端。", file=sys.stderr)
@@ -62,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
 
     port = free_port(args.port)
     url = f"http://127.0.0.1:{port}/"
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", log_config=None))
 
     if args.app:
         try:

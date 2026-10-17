@@ -26,6 +26,10 @@ from make_icon import build as build_icon  # noqa: E402
 
 
 def main() -> None:
+    # Windows 的控制台默认不是 UTF-8，打印中文会报 UnicodeEncodeError 导致打包步骤失败
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     web = BACKEND / "app" / "web"
     if not (web / "index.html").exists():
         sys.exit("没有找到 backend/app/web/index.html，请先在 frontend 目录运行 npm run build")
