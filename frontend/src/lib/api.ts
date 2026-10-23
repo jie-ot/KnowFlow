@@ -1,6 +1,26 @@
 // 打包后前端由后端同源提供，留空即可；开发时 .env.development 指向 8000 端口
 export const API = process.env.NEXT_PUBLIC_API_BASE || "";
 
+// A restored database can reuse note versions. Carry the dataset token on writes
+// so an old window cannot accidentally apply an edit to the restored dataset.
+let datasetToken: string | null = null;
+function datasetHeaders(headers?: HeadersInit): Headers {
+  const result = new Headers(headers);
+  if (datasetToken) result.set("X-KnowFlow-Dataset", datasetToken);
+  return result;
+}
+function observeDataset(res: Response) {
+  const next = res.headers.get("X-KnowFlow-Dataset");
+  if (!next) return;
+  const previous = datasetToken;
+  datasetToken = next;
+  if (previous && previous !== next && typeof window !== "undefined") {
+    // Every edit is persisted synchronously. Reload clears in-memory queues;
+    // recovered drafts still require confirmation and compare their base text.
+    window.location.reload();
+  }
+}
+
 export class ApiError extends Error {
   code: string;
   status: number;
@@ -14,6 +34,7 @@ export class ApiError extends Error {
 }
 
 async function handle<T>(res: Response): Promise<T> {
+  observeDataset(res);
   if (res.ok) return res.json() as Promise<T>;
   let body: { error?: Record<string, unknown> } = {};
   try {
@@ -28,7 +49,7 @@ export async function api<T = unknown>(path: string, init?: RequestInit & { json
   try {
     res = await fetch(API + path, {
       ...rest,
-      headers: json !== undefined ? { "Content-Type": "application/json", ...(rest.headers || {}) } : rest.headers,
+      headers: datasetHeaders(json !== undefined ? { "Content-Type": "application/json", ...(rest.headers || {}) } : rest.headers),
       body: json !== undefined ? JSON.stringify(json) : rest.body,
     });
   } catch {
@@ -43,9 +64,10 @@ export async function download(path: string, init: RequestInit & { json?: unknow
   const { json, ...rest } = init;
   const res = await fetch(API + path, {
     ...rest,
-    headers: json !== undefined ? { "Content-Type": "application/json" } : undefined,
+    headers: datasetHeaders(json !== undefined ? { "Content-Type": "application/json" } : rest.headers),
     body: json !== undefined ? JSON.stringify(json) : rest.body,
   });
+  observeDataset(res);
   if (!res.ok) await handle(res);
   const disposition = res.headers.get("Content-Disposition") || "";
   const match = disposition.match(/filename\*=UTF-8''([^;]+)/);
@@ -80,12 +102,16 @@ export type Source = {
 export type Note = NoteSummary & { content: string; revision_count: number; sources: Source[] };
 
 export type NoteLinks = {
-  outgoing: { title: string; note_id: string | null; course_id: string | null }[];
+  outgoing: { title: string; note_id: string | null; course_id: string | null; target: string; label: string;
+    status: "resolved" | "missing" | "ambiguous"; bound_id?: string | null;
+    candidates: { id: string; title: string; course_id: string }[] }[];
   backlinks: { id: string; title: string; course_id: string; snippet: string }[];
 };
 
 export type GraphNode = { id: string; title: string; course_id: string; degree: number; card_count: number; excerpt: string };
-export type GraphData = { nodes: GraphNode[]; edges: { source: string; target: string }[]; unresolved: number };
+export type RelationKind = "related" | "prerequisite" | "contains" | "applies";
+export type GraphData = { nodes: GraphNode[]; edges: { source: string; target: string; kind: RelationKind }[]; unresolved: number; ambiguous: number;
+  center_id?: string | null; depth?: number | null; total_nodes?: number; total_edges?: number };
 
 export type CalendarData = {
   today: string; tasks: Task[]; unscheduled: Task[]; reviews: Record<string, number>;
@@ -97,6 +123,7 @@ export type Revision = { id: string; title: string; reason: string; created_at: 
 export type Card = {
   id: string; course_id: string; source_note_id: string | null; front: string; back: string;
   n: number; interval: number; ef: number; due: string; forgot_count: number;
+  review_revision: number;
   course_name?: string; course_color?: string; note_title?: string | null;
   preview?: { forgot: number; hard: number; good: number };
 };
@@ -159,12 +186,50 @@ export type RunHandlers = {
   onError?: (err: { kind: string; message: string; retryable: boolean; detail?: string }, partial?: string) => void;
 };
 
+async function consumeSse(res: Response, onEvent: (event: string, data: any) => void) {
+  if (!res.body) throw new ApiError(502, { code: "STREAM_INTERRUPTED", message: "响应没有正文，请重试", retryable: true });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let terminal = false;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n");
+      let end;
+      while ((end = buffer.indexOf("\n\n")) !== -1) {
+        const block = buffer.slice(0, end);
+        buffer = buffer.slice(end + 2);
+        const event = block.match(/^event: ?(.*)$/m)?.[1];
+        const lines = [...block.matchAll(/^data: ?(.*)$/gm)].map((match) => match[1]);
+        if (!event || !lines.length) continue;
+        let payload;
+        try { payload = JSON.parse(lines.join("\n")); }
+        catch { throw new ApiError(502, { code: "STREAM_FORMAT", message: "响应事件的 JSON 格式错误，结果尚未完成", retryable: true }); }
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+          throw new ApiError(502, { code: "STREAM_FORMAT", message: "响应事件结构错误，结果尚未完成", retryable: true });
+        }
+        if (event === "done" || event === "error") terminal = true;
+        onEvent(event, payload);
+      }
+      if (done) break;
+    }
+    if (!terminal) throw new ApiError(502, { code: "STREAM_INTERRUPTED", message: "响应中断，结果尚未完成，请重试", retryable: true });
+  } catch (error) {
+    if (error instanceof ApiError || (error as Error).name === "AbortError") throw error;
+    throw new ApiError(0, { code: "STREAM_INTERRUPTED", message: "接收响应时连接中断，结果尚未完成，请重试", retryable: true });
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export async function runAi(body: Record<string, unknown>, h: RunHandlers, signal?: AbortSignal) {
   let res: Response;
   try {
     res = await fetch(API + "/api/ai/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: datasetHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
       signal,
     });
@@ -172,30 +237,16 @@ export async function runAi(body: Record<string, unknown>, h: RunHandlers, signa
     if ((e as Error).name === "AbortError") return;
     throw new ApiError(0, { code: "OFFLINE", message: "连不上本地后端，请确认 KnowFlow 正在运行" });
   }
-  if (!res.ok || !res.body) await handle(res);
-  const reader = res.body!.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
+  observeDataset(res);
+  if (!res.ok) await handle(res);
   try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf("\n\n")) !== -1) {
-        const block = buf.slice(0, idx);
-        buf = buf.slice(idx + 2);
-        const ev = block.match(/^event: (.*)$/m)?.[1];
-        const data = block.match(/^data: (.*)$/m)?.[1];
-        if (!ev || !data) continue;
-        const payload = JSON.parse(data);
-        if (ev === "start") h.onStart?.(payload);
-        else if (ev === "delta") h.onDelta?.(payload.text);
-        else if (ev === "progress") h.onProgress?.(payload);
-        else if (ev === "done") h.onDone?.(payload.draft);
-        else if (ev === "error") h.onError?.(payload.error, payload.partial);
-      }
-    }
+    await consumeSse(res, (ev, payload) => {
+      if (ev === "start") h.onStart?.(payload);
+      else if (ev === "delta") h.onDelta?.(payload.text);
+      else if (ev === "progress") h.onProgress?.(payload);
+      else if (ev === "done") h.onDone?.(payload.draft);
+      else if (ev === "error") h.onError?.(payload.error, payload.partial);
+    });
   } catch (e) {
     if ((e as Error).name !== "AbortError") throw e;
   }
@@ -207,30 +258,16 @@ export async function postSse(path: string, body: unknown, onEvent: (event: stri
   let res: Response;
   try {
     res = await fetch(API + path, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
+      method: "POST", headers: datasetHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body), signal,
     });
   } catch (e) {
     if ((e as Error).name === "AbortError") return;
     throw new ApiError(0, { code: "OFFLINE", message: "连不上本地后端，请确认 KnowFlow 正在运行" });
   }
-  if (!res.ok || !res.body) await handle(res);
-  const reader = res.body!.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
+  observeDataset(res);
+  if (!res.ok) await handle(res);
   try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf("\n\n")) !== -1) {
-        const block = buf.slice(0, idx);
-        buf = buf.slice(idx + 2);
-        const ev = block.match(/^event: (.*)$/m)?.[1];
-        const data = block.match(/^data: (.*)$/m)?.[1];
-        if (ev && data) onEvent(ev, JSON.parse(data));
-      }
-    }
+    await consumeSse(res, onEvent);
   } catch (e) {
     if ((e as Error).name !== "AbortError") throw e;
   }

@@ -22,6 +22,54 @@ def sse(chunks):
     return "".join(f"data: {json.dumps(c, ensure_ascii=False)}\n\n" for c in chunks) + "data: [DONE]\n\n"
 
 
+@pytest.mark.parametrize("first,finish", [
+    ("这不是 JSON", "stop"),
+    ('{"links":', "length"),
+    ('{"other": []}', "stop"),
+    ("", "stop"),
+])
+def test_graph_suggest_retries_invalid_output(client, monkeypatch, first, finish):
+    from app.llm import gateway
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body)
+        assert body["max_tokens"] == 4096
+        return httpx.Response(200, json={"choices": [{
+            "message": {"content": first if len(seen) == 1 else '{"links":[]}'},
+            "finish_reason": finish if len(seen) == 1 else "stop",
+        }]})
+
+    monkeypatch.setattr(gateway, "TRANSPORT", httpx.MockTransport(handler))
+    cfg = client.post("/api/ai/configs", json={"base_url": "https://api.example.com", "api_key": "sk-x",
+        "model": "m", "max_output_tokens": 4096}).json()
+    client.post(f"/api/ai/configs/{cfg['id']}/consent")
+    response = client.post("/api/graph/suggest", json={})
+    assert response.status_code == 200
+    assert response.json() == {"links": []}
+    assert len(seen) == 2
+
+
+def test_graph_suggest_reports_truncation(client, monkeypatch):
+    from app.llm import gateway
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"choices": [{
+            "message": {"content": '{"links":'}, "finish_reason": "length",
+        }]})
+
+    monkeypatch.setattr(gateway, "TRANSPORT", httpx.MockTransport(handler))
+    cfg = client.post("/api/ai/configs", json={"base_url": "https://api.example.com", "api_key": "sk-x", "model": "m"}).json()
+    client.post(f"/api/ai/configs/{cfg['id']}/consent")
+    response = client.post("/api/graph/suggest", json={})
+    assert response.status_code == 502
+    assert "截断" in response.json()["error"]["message"]
+    assert len(seen) == 2
+
+
 def test_assistant_tool_loop(client, monkeypatch):
     from app.llm import gateway
     seen = []

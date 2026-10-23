@@ -236,7 +236,46 @@ CREATE TABLE summaries (
 );
 """
 
-MIGRATIONS = [SCHEMA_V1, SCHEMA_V2]
+SCHEMA_V3 = """
+ALTER TABLE cards ADD COLUMN review_revision INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE operation_receipts (
+    scope TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (scope, operation_id)
+);
+CREATE TABLE legacy_link_bindings (
+    source_note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    target_key TEXT NOT NULL,
+    target_id TEXT,
+    candidate_ids TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (source_note_id, target_key)
+);
+"""
+
+SCHEMA_V4 = """
+ALTER TABLE note_revisions ADD COLUMN relation_types TEXT NOT NULL DEFAULT '{}';
+CREATE TABLE note_relation_types (
+    source_note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    target_note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('related', 'prerequisite', 'contains', 'applies')),
+    PRIMARY KEY (source_note_id, target_note_id)
+);
+CREATE INDEX idx_note_relation_target ON note_relation_types(target_note_id);
+"""
+
+SCHEMA_V5 = """
+ALTER TABLE tasks ADD COLUMN source_card_id TEXT REFERENCES cards(id) ON DELETE SET NULL;
+CREATE INDEX idx_tasks_source_card ON tasks(source_card_id);
+"""
+
+SCHEMA_V6 = """
+ALTER TABLE materials ADD COLUMN parse_attempt INTEGER NOT NULL DEFAULT 0;
+"""
+
+MIGRATIONS = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6]
 
 
 def now_iso() -> str:
@@ -257,20 +296,45 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def migrate_connection(conn: sqlite3.Connection) -> bool:
+    """Migrate under one SQLite transaction, including the version marker.
+
+    Execute complete statements individually: executescript would implicitly
+    commit the transaction before running the migration.
+    """
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute("PRAGMA user_version").fetchone()[0]
+        if current > len(MIGRATIONS):
+            raise RuntimeError("数据库来自更新版本的 KnowFlow，请升级应用后再打开")
+        is_new = current == 0
+        for index in range(current, len(MIGRATIONS)):
+            statement = ""
+            for line in MIGRATIONS[index].splitlines(keepends=True):
+                statement += line
+                if sqlite3.complete_statement(statement):
+                    conn.execute(statement)
+                    statement = ""
+            if statement.strip():
+                raise RuntimeError("Incomplete database migration")
+            conn.execute(f"PRAGMA user_version = {index + 1}")
+        return is_new
+
+
 def init_db() -> bool:
     """建表或升级表结构。返回 True 表示这是一个新建的数据库。"""
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     config.MATERIALS_DIR.mkdir(parents=True, exist_ok=True)
     conn = connect()
     try:
-        conn.execute("PRAGMA journal_mode = WAL")
-        current = conn.execute("PRAGMA user_version").fetchone()[0]
-        is_new = current == 0
-        for index in range(current, len(MIGRATIONS)):
-            conn.executescript(MIGRATIONS[index])
-            conn.execute(f"PRAGMA user_version = {index + 1}")
-        conn.commit()
-        return is_new
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.OperationalError as error:
+            # Another launcher may be changing journal mode simultaneously.
+            # The migration itself remains serialized by BEGIN IMMEDIATE.
+            if error.sqlite_errorcode not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise
+        return migrate_connection(conn)
     finally:
         conn.close()
 

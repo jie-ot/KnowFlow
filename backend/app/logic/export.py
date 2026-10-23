@@ -134,6 +134,7 @@ def build_html(
     cards_by_note: dict[str, list[dict[str, Any]]],
     plan: dict[str, Any] | None,
     tasks: list[dict[str, Any]],
+    link_targets: dict[str, dict[str, str | None]] | None = None,
 ) -> str:
     esc = html.escape
     course_names = sorted({courses[n["course_id"]]["name"] for n in notes if n["course_id"] in courses})
@@ -141,14 +142,28 @@ def build_html(
     toc_items = []
     sections = []
     anchors = {}
+    title_counts: dict[str, int] = {}
+    for note in notes:
+        key = note["title"].strip().lower()
+        title_counts[key] = title_counts.get(key, 0) + 1
     for index, note in enumerate(notes, start=1):
-        anchors.setdefault(note["title"].strip().lower(), f"n{index}")
+        anchors[f"id:{note['id']}"] = f"n{index}"
+        key = note["title"].strip().lower()
+        if title_counts[key] == 1:
+            anchors[key] = f"n{index}"
     for index, note in enumerate(notes, start=1):
         anchor = f"n{index}"
         course = courses.get(note["course_id"], {"name": "未分类"})
         toc_items.append(f'<li><a href="#{anchor}">{esc(note["title"])}</a><span>{esc(course["name"])}</span></li>')
         tags = "".join(f"<span class=\"tag\">{esc(t)}</span>" for t in note.get("tags") or [])
-        body = render_markdown(note.get("content") or "", anchor, anchors)
+        source_anchors = dict(anchors)
+        for target, target_id in (link_targets or {}).get(note["id"], {}).items():
+            actual = anchors.get(f"id:{target_id}") if target_id else None
+            if actual:
+                source_anchors[target] = actual
+            else:
+                source_anchors.pop(target, None)
+        body = render_markdown(note.get("content") or "", anchor, source_anchors)
         sections.append(
             f'<article class="note" id="{anchor}">'
             f'<header><p class="course">{esc(course["name"])}</p><h2>{esc(note["title"])}</h2>'

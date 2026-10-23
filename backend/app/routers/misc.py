@@ -14,6 +14,7 @@ from .. import config
 from ..db import get_db, get_settings, now_iso, rows_to_dicts
 from ..errors import AppError
 from ..logic.export import build_html
+from ..logic.links import LinkResolver, extract_links
 from ..logic.search import search
 from ..logic.timeutil import today_str
 from .plans import get_plan_row, plan_tasks
@@ -66,8 +67,16 @@ def export_html(body: ExportIn, conn: sqlite3.Connection = Depends(get_db)) -> R
     if body.plan_id:
         plan = get_plan_row(conn, body.plan_id)
         tasks = plan_tasks(conn, plan["id"], today_str(int(get_settings(conn)["day_start_hour"])))
+    resolver = LinkResolver(conn)
+    link_targets = {}
+    for row in rows:
+        targets = {}
+        for target in extract_links(row["content"]):
+            resolved = resolver.resolve(target, row["id"], bind=False)
+            targets[target.lower()] = resolved["bound_id"] if resolved["status"] == "resolved" else None
+        link_targets[row["id"]] = targets
     html_text = build_html(title=body.title.strip(), exported_at=now_iso(), courses=courses, notes=rows,
-                           cards_by_note=cards_by_note, plan=plan, tasks=tasks)
+                           cards_by_note=cards_by_note, plan=plan, tasks=tasks, link_targets=link_targets)
     filename = f"{body.title.strip()}.html".replace("/", "_")
     return Response(
         content=html_text.encode("utf-8"),

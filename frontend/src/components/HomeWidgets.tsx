@@ -2,10 +2,11 @@
 
 import { Check, ChevronDown, ChevronUp, RotateCcw, Sparkles } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
 import { api, ApiError, Card, fetcher, postSse } from "@/lib/api";
 import { colorOf, intervalLabel } from "@/lib/format";
+import { ReviewSubmission } from "@/lib/submission";
 import { useAiConsent } from "./ai";
 import { Markdown } from "./Markdown";
 import { Dot, Spinner, useToast } from "./ui";
@@ -16,31 +17,38 @@ const GRADES = [["forgot", "忘记", "1", "var(--bad)"], ["hard", "模糊", "2",
 
 /** 在首页卡片里直接翻卡复习，和复习页用同一套 SM-2 记录 */
 export function QuickReview({ onExit }: { onExit: () => void }) {
-  const { data } = useSWR<{ items: Card[] }>("/api/review/queue", fetcher, { revalidateOnFocus: false });
+  const { data, mutate } = useSWR<{ items: Card[] }>("/api/review/queue", fetcher, { revalidateOnFocus: false });
   const [queue, setQueue] = useState<Card[] | null>(null);
   const [index, setIndex] = useState(0);
   const [flipped, setFlipped] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const submission = useRef(new ReviewSubmission(() => typeof window === "undefined" ? null : localStorage));
   const toast = useToast();
 
   useEffect(() => { if (data && queue === null) setQueue(data.items); }, [data, queue]);
   const card = queue?.[index];
 
   const grade = useCallback(async (g: "forgot" | "hard" | "good") => {
-    if (!card || !flipped) return;
+    if (!card || !flipped || submission.current.busy || conflict) return;
+    setSubmitting(true);
     try {
-      await api(`/api/review/${card.id}`, { method: "POST", json: { grade: g } });
+      const advanced = await submission.current.submit(card, g, (request) =>
+        api(`/api/review/${card.id}`, { method: "POST", json: request }));
+      if (!advanced) return;
       setFlipped(false);
       setIndex((i) => i + 1);
       globalMutate("/api/courses");
       globalMutate("/api/stats?days=365");
     } catch (e) {
+      if ((e as ApiError).code === "REVIEW_CONFLICT") setConflict(true);
       toast((e as ApiError).message, "bad");
-    }
-  }, [card, flipped, toast]);
+    } finally { setSubmitting(false); }
+  }, [card, flipped, toast, conflict]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).tagName.match(/INPUT|TEXTAREA|SELECT/)) return;
+      if (e.repeat || submitting || (e.target as HTMLElement).tagName.match(/INPUT|TEXTAREA|SELECT/)) return;
       if (e.key === " ") { e.preventDefault(); setFlipped((f) => !f); }
       if (e.key === "Escape") onExit();
       if (flipped && e.key === "1") grade("forgot");
@@ -49,7 +57,7 @@ export function QuickReview({ onExit }: { onExit: () => void }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flipped, grade, onExit]);
+  }, [flipped, grade, onExit, submitting]);
 
   if (!queue) return <div className="index-card min-h-[300px] grid place-items-center"><Spinner /></div>;
   if (!card) {
@@ -61,6 +69,7 @@ export function QuickReview({ onExit }: { onExit: () => void }) {
       </div>
     );
   }
+  const pendingGrade = submission.current.pendingFor(card)?.grade;
   return (
     <div>
       <div className="flip">
@@ -86,12 +95,19 @@ export function QuickReview({ onExit }: { onExit: () => void }) {
       </div>
       <div className={`grid grid-cols-3 gap-2 mt-4 transition-opacity ${flipped ? "" : "opacity-30 pointer-events-none"}`}>
         {GRADES.map(([g, label, k, c]) => (
-          <button key={g} onClick={() => grade(g)} className="h-12 rounded-xl border border-rule hover:border-current flex flex-col items-center justify-center" style={{ color: c }}>
-            <span className="text-[13.5px] font-semibold">{label} <kbd className="text-[10px] text-faint font-sans">{k}</kbd></span>
+          <button key={g} onClick={() => grade(g)} disabled={submitting || conflict || (!!pendingGrade && pendingGrade !== g)} className="h-12 rounded-xl border border-rule hover:border-current flex flex-col items-center justify-center" style={{ color: c }}>
+            <span className="text-[13.5px] font-semibold">{pendingGrade === g ? `重试：${label}` : label} <kbd className="text-[10px] text-faint font-sans">{k}</kbd></span>
             <span className="text-[11px] text-muted">{card.preview && intervalLabel(card.preview[g])}后</span>
           </button>
         ))}
       </div>
+      <p role="status" className="mt-2 text-[12px] text-muted">
+        {submitting ? "正在提交评分…" : conflict ? "这张卡片已在其他窗口评分。" : pendingGrade ? "上次评分尚未确认，重试会提交原评分。" : ""}
+        {conflict && <button className="ml-2 text-accent" onClick={async () => {
+          const next = await mutate();
+          if (next) { submission.current.clear(card); setQueue(next.items); setIndex(0); setFlipped(false); setConflict(false); }
+        }}>更新复习队列</button>}
+      </p>
       <div className="flex justify-between mt-3 text-[12px]">
         <button className="text-muted hover:text-ink" onClick={onExit}>收起（Esc）</button>
         <Link href="/review" className="text-muted hover:text-accent">去复习页</Link>

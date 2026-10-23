@@ -1,0 +1,56 @@
+name: 测试与静态构建
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  backend:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: 安装锁定的测试依赖
+        run: uv sync --locked --group dev --python 3.12
+      - name: 临时数据与模拟模型回归测试
+        run: uv run --locked --python 3.12 pytest -q
+      - name: 已入库静态网页 HTTP 烟测
+        run: uv run --locked --python 3.12 python scripts/smoke_static.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: npm run typecheck
+      - name: 构建并复制静态网页
+        run: npm run build

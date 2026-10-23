@@ -10,6 +10,7 @@ import { ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react
 import useSWR from "swr";
 import { api, Course, fetcher, SearchItem } from "@/lib/api";
 import { colorOf, COURSE_COLORS } from "@/lib/format";
+import { LatestRequest } from "@/lib/search-request";
 import { AiProvider } from "./ai";
 import { AssistantPanel } from "./Assistant";
 import { FocusProvider } from "./Focus";
@@ -276,6 +277,7 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
   const { data: courses } = useSWR<Course[]>("/api/courses", fetcher);
   const courseMap = useMemo(() => Object.fromEntries((courses || []).map((c) => [c.id, c])), [courses]);
   const input = useRef<HTMLInputElement>(null);
+  const searchRequest = useRef(new LatestRequest());
 
   useEffect(() => {
     if (open) {
@@ -287,14 +289,16 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
 
   useEffect(() => {
     if (!open) return;
+    const request = searchRequest.current.begin();
     const t = setTimeout(async () => {
       try {
-        const r = await api<{ items: SearchItem[] }>(`/api/search?limit=12&q=${encodeURIComponent(q)}`);
+        const r = await api<{ items: SearchItem[] }>(`/api/search?limit=12&q=${encodeURIComponent(q)}`, { signal: request.signal });
+        if (!request.current()) return;
         setItems(r.items);
         setIndex(0);
       } catch {}
     }, 160);
-    return () => clearTimeout(t);
+    return () => { clearTimeout(t); searchRequest.current.cancel(); };
   }, [q, open]);
 
   const needle = q.trim().toLowerCase();

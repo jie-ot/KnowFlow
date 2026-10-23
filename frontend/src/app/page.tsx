@@ -4,7 +4,8 @@ import { ArrowUpRight, BookOpenCheck, Check, FilePlus2, FileUp, Pencil, Plus, Sp
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
-import { api, ApiError, Course, fetcher, Note, NoteSummary, Plan, Task } from "@/lib/api";
+import { api, ApiError, Card, Course, fetcher, Note, NoteSummary, Plan, Task } from "@/lib/api";
+import { isNoteListCacheKey } from "@/lib/note-list-cache";
 import { colorOf, greeting, relTime, shiftDay, TASK_KINDS, todayLabel } from "@/lib/format";
 import { Heatmap } from "@/components/Heatmap";
 import { FocusButton } from "@/components/Focus";
@@ -15,12 +16,14 @@ type Stats = {
   today: string; streak: number; accuracy_7d: number | null; reviewed_today: number; due_today: number;
   total_cards: number; series: { day: string; total: number; good: number }[];
   due_by_course: { id: string; name: string; color: string; due: number }[];
+  weak_cards: Card[];
 };
 
 export default function Today() {
   const { data: stats } = useSWR<Stats>("/api/stats?days=365", fetcher);
   const { data: tasks, mutate: mutateTasks } = useSWR<{ today: string; items: Task[] }>("/api/tasks/today", fetcher);
-  const { data: notes } = useSWR<NoteSummary[]>("/api/notes", fetcher);
+  const { data: recentNotes } = useSWR<{ items: NoteSummary[] }>("/api/notes/page?limit=5", fetcher);
+  const notes = recentNotes?.items;
   const { data: courses } = useSWR<Course[]>("/api/courses", fetcher);
   const { data: ai } = useSWR<{ configured: boolean }>("/api/ai/status", fetcher);
   const courseMap = Object.fromEntries((courses || []).map((c) => [c.id, c]));
@@ -118,6 +121,19 @@ export default function Today() {
               <Heatmap series={stats.series} today={stats.today} streak={stats.streak} accuracy={stats.accuracy_7d} />
             </div>
           )}
+          {!!stats?.weak_cards?.length && <section className="mt-10">
+            <div className="flex items-baseline justify-between">
+              <h2 className="section-title">薄弱知识点</h2>
+              <Link className="text-[12px] text-accent" href="/review?tab=cards&weak=1">查看全部</Link>
+            </div>
+            <p className="text-[12px] text-muted mb-2">累计遗忘至少3次。补充理解后，继续用后续复习评分检验掌握情况。</p>
+            <ul className="divide-y divide-rule border-y border-rule">{stats.weak_cards.slice(0, 3).map((card) => <li key={card.id}>
+              <Link href={`/review?tab=cards&weak=1&learn=${card.id}`} className="block py-3 row-hover">
+                <span className="block text-[14px] font-medium truncate">{card.front}</span>
+                <span className="block text-[12px] text-muted mt-1">累计遗忘 {card.forgot_count} 次 · 查看来源、补充理解与安排学习</span>
+              </Link>
+            </li>)}</ul>
+          </section>}
         </section>
 
         <div className="space-y-12 min-w-0">
@@ -224,7 +240,7 @@ function QuickCapture({ courses }: { courses: Course[] }) {
       const n = await api<Note>("/api/notes", { method: "POST", json: { course_id: target, title, content: rest.join("\n").trim() || (first.length > 40 ? body : "") } });
       setSaved(n);
       setText("");
-      globalMutate("/api/notes");
+      globalMutate(isNoteListCacheKey);
       globalMutate("/api/courses");
     } catch (e) {
       toast((e as ApiError).message, "bad");

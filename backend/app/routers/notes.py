@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -15,14 +15,14 @@ from .. import config
 from ..db import dumps, get_db, new_id, now_iso, rows_to_dicts
 from ..errors import AppError, not_found
 from ..logic.export import note_to_markdown, parse_front_matter
-from ..logic.links import add_link, extract_links, remove_link, rename_links, snippet_around, title_index
+from ..logic.links import (LinkResolver, add_link, extract_links, pin_title_references, remove_link,
+                           prune_relation_types, resolve_links, rewrite_target, snippet_around, stable_id, stable_target)
 from ..logic.text import plain_excerpt
 from ..repo import get_course, get_note_row, note_detail, note_summary
+from ..services.notes import MAX_CONTENT, rename_backlinks as _rename_backlinks, restore_note_revision, save_revision, update_note_fields, validate_content
+from ..services.transactions import atomic_write
 
 router = APIRouter(prefix="/api", tags=["笔记"])
-
-MAX_CONTENT = 200_000
-
 
 class NoteIn(BaseModel):
     course_id: str
@@ -39,6 +39,10 @@ class NotePatch(BaseModel):
     course_id: str | None = None
 
 
+class RestoreRevisionIn(BaseModel):
+    base_version: int
+
+
 def clean_tags(tags: list[str]) -> list[str]:
     seen: list[str] = []
     for tag in tags:
@@ -52,14 +56,6 @@ def clean_tags(tags: list[str]) -> list[str]:
     if len(seen) > 20:
         raise AppError(422, "VALIDATION", "一篇笔记最多 20 个标签", field="tags")
     return seen
-
-
-def save_revision(conn: sqlite3.Connection, note: dict[str, Any], reason: str, draft_id: str | None = None) -> None:
-    conn.execute(
-        "INSERT INTO note_revisions(id, note_id, title, content, reason, draft_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (new_id(), note["id"], note["title"], note["content"], reason, draft_id, now_iso()),
-    )
 
 
 @router.get("/notes")
@@ -95,18 +91,63 @@ def list_tags(course_id: str | None = None, conn: sqlite3.Connection = Depends(g
     return [{"tag": t, "count": c} for t, c in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
 
 
+@router.get("/notes/index")
+def note_index(conn: sqlite3.Connection = Depends(get_db)) -> list[dict]:
+    """Lightweight global identities for wiki resolution and editor completion."""
+    return [dict(row) for row in conn.execute(
+        "SELECT id, title, course_id FROM notes WHERE deleted_at IS NULL ORDER BY title COLLATE NOCASE, id")]
+
+
+@router.get("/notes/page")
+def paged_notes(course_id: str | None = None, tag: str | None = None, q: str = Query(default="", max_length=100),
+                offset: int = Query(default=0, ge=0), limit: int = Query(default=40, ge=1, le=200),
+                conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    """Filter before pagination and compute summaries for only the requested page."""
+    where, params = ["deleted_at IS NULL"], []
+    if course_id:
+        where.append("course_id = ?")
+        params.append(course_id)
+    if tag:
+        where.append("EXISTS (SELECT 1 FROM json_each(notes.tags) WHERE json_each.value = ?)")
+        params.append(tag)
+    if q.strip():
+        escaped = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where.append("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')")
+        params.extend([f"%{escaped}%"] * 3)
+    clause = " AND ".join(where)
+    total = conn.execute(f"SELECT COUNT(*) FROM notes WHERE {clause}", params).fetchone()[0]
+    rows = rows_to_dicts(conn.execute(
+        f"SELECT * FROM notes WHERE {clause} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+        [*params, limit, offset],
+    ).fetchall(), ("tags",))
+    ids = [row["id"] for row in rows]
+    cards, sources = {}, {}
+    if ids:
+        placeholders = ",".join("?" * len(ids))
+        cards = dict(conn.execute(
+            f"SELECT source_note_id, COUNT(*) FROM cards WHERE deleted_at IS NULL AND source_note_id IN ({placeholders}) GROUP BY source_note_id", ids,
+        ).fetchall())
+        sources = dict(conn.execute(
+            f"SELECT note_id, COUNT(*) FROM note_sources WHERE note_id IN ({placeholders}) GROUP BY note_id", ids,
+        ).fetchall())
+    return {"items": [note_summary(row, cards.get(row["id"], 0), sources.get(row["id"], 0)) for row in rows],
+            "total": total, "offset": offset, "limit": limit, "has_more": offset + len(rows) < total}
+
+
 @router.post("/notes", status_code=201)
 def create_note(body: NoteIn, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     get_course(conn, body.course_id)
     now = now_iso()
     note_id = new_id()
     title = body.title.strip() or "未命名笔记"
-    with conn:
+    with atomic_write(conn):
+        pin_title_references(conn, title)
         conn.execute(
             "INSERT INTO notes(id, course_id, title, content, tags, version, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
             (note_id, body.course_id, title, body.content, dumps(clean_tags(body.tags)), now, now),
         )
+        resolve_links(conn, body.content, note_id)
     return note_detail(conn, get_note_row(conn, note_id))
 
 
@@ -117,10 +158,6 @@ def get_note(note_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
 
 @router.patch("/notes/{note_id}")
 def update_note(note_id: str, body: NotePatch, conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    note = get_note_row(conn, note_id)
-    if note["version"] != body.base_version:
-        raise AppError(409, "VERSION_CONFLICT", "这篇笔记已在别处被修改，请刷新后再编辑",
-                       extra={"current_version": note["version"]})
     fields: dict[str, Any] = {}
     if body.title is not None:
         fields["title"] = body.title.strip() or "未命名笔记"
@@ -128,144 +165,192 @@ def update_note(note_id: str, body: NotePatch, conn: sqlite3.Connection = Depend
         fields["content"] = body.content
     if body.tags is not None:
         fields["tags"] = dumps(clean_tags(body.tags))
-    if body.course_id is not None and body.course_id != note["course_id"]:
-        get_course(conn, body.course_id)
+    if body.course_id is not None:
         fields["course_id"] = body.course_id
-    if not fields:
-        return note_detail(conn, note)
-    sets = ", ".join(f"{k} = ?" for k in fields)
-    renamed = 0
-    with conn:
-        # 正文被清空时先存一份旧版本，误操作也能在“修订历史”里找回
-        if "content" in fields and not fields["content"].strip() and (note["content"] or "").strip():
-            save_revision(conn, note, "before_clear")
-        conn.execute(
-            f"UPDATE notes SET {sets}, version = version + 1, updated_at = ? WHERE id = ?",
-            (*fields.values(), now_iso(), note_id),
-        )
-        if "course_id" in fields:  # 卡片跟随笔记换学科
-            conn.execute("UPDATE cards SET course_id = ? WHERE source_note_id = ?", (fields["course_id"], note_id))
-        if "title" in fields and fields["title"].strip().lower() != note["title"].strip().lower():
-            renamed = _rename_backlinks(conn, note_id, note["title"], fields["title"])
-    detail = note_detail(conn, get_note_row(conn, note_id))
-    detail["renamed_links"] = renamed
-    return detail
-
-
-def _rename_backlinks(conn: sqlite3.Connection, note_id: str, old: str, new: str) -> int:
-    """笔记改名后，把其他笔记里指向旧标题的 [[链接]] 一起改掉（不改它们的更新时间）。"""
-    other = conn.execute(
-        "SELECT id FROM notes WHERE deleted_at IS NULL AND lower(title) = lower(?) AND id != ?", (old, note_id)
-    ).fetchone()
-    if other:  # 还有别的笔记叫这个名字，链接仍然有效，不动
-        return 0
-    total = 0
-    for row in conn.execute(
-        "SELECT id, content FROM notes WHERE deleted_at IS NULL AND id != ? AND content LIKE ?",
-        (note_id, "%[[%"),
-    ).fetchall():
-        content, count = rename_links(row["content"], old, new)
-        if count:
-            conn.execute("UPDATE notes SET content = ?, version = version + 1 WHERE id = ?", (content, row["id"]))
-            total += count
-    return total
+    return update_note_fields(conn, note_id, body.base_version, fields)
 
 
 @router.get("/notes/{note_id}/links")
 def note_links(note_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     """出链（这篇笔记链接到谁）与反向链接（谁链接到这篇笔记）。"""
-    note = get_note_row(conn, note_id)
-    index = title_index(conn)
-    outgoing = []
-    for title in extract_links(note["content"]):
-        target = index.get(title.lower())
-        outgoing.append({"title": title, "note_id": target["id"] if target else None,
-                         "course_id": target["course_id"] if target else None})
-    backlinks = []
-    key = note["title"].strip().lower()
-    for row in conn.execute(
-        "SELECT id, title, course_id, content, updated_at FROM notes "
-        "WHERE deleted_at IS NULL AND id != ? AND content LIKE ? ORDER BY updated_at DESC",
-        (note_id, "%[[%"),
-    ):
-        if any(t.lower() == key for t in extract_links(row["content"])):
-            backlinks.append({"id": row["id"], "title": row["title"], "course_id": row["course_id"],
-                              "snippet": snippet_around(row["content"], note["title"])})
+    with atomic_write(conn):
+        note = get_note_row(conn, note_id)
+        resolver = LinkResolver(conn)
+        outgoing = resolve_links(conn, note["content"], note_id, resolver)
+        backlinks = []
+        for row in conn.execute(
+            "SELECT id, title, course_id, content, updated_at FROM notes "
+            "WHERE deleted_at IS NULL AND id != ? AND content LIKE ? ORDER BY updated_at DESC",
+            (note_id, "%[[%"),
+        ):
+            bound = next((link for link in resolve_links(conn, row["content"], row["id"], resolver) if link["note_id"] == note_id), None)
+            if bound:
+                backlinks.append({"id": row["id"], "title": row["title"], "course_id": row["course_id"],
+                                  "snippet": snippet_around(row["content"], bound["target"])})
     return {"outgoing": outgoing, "backlinks": backlinks}
 
 
 class LinkIn(BaseModel):
     target_id: str
+    kind: Literal["related", "prerequisite", "contains", "applies"] | None = None
+
+
+class RelationIn(BaseModel):
+    kind: Literal["related", "prerequisite", "contains", "applies"]
+
+
+def _set_relation_type(conn: sqlite3.Connection, source_id: str, target_id: str, kind: str) -> None:
+    conn.execute(
+        "INSERT INTO note_relation_types(source_note_id, target_note_id, kind) VALUES (?, ?, ?) "
+        "ON CONFLICT(source_note_id, target_note_id) DO UPDATE SET kind = excluded.kind",
+        (source_id, target_id, kind),
+    )
 
 
 def _write_content(conn: sqlite3.Connection, note_id: str, content: str) -> None:
+    validate_content(content)
+    save_revision(conn, get_note_row(conn, note_id), "before_link_edit")
     conn.execute("UPDATE notes SET content = ?, version = version + 1, updated_at = ? WHERE id = ?",
                  (content, now_iso(), note_id))
 
 
 @router.post("/notes/{note_id}/links")
 def link_notes(note_id: str, body: LinkIn, conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    """在知识图谱里手动连线：在源笔记末尾的“相关笔记：”里加上 [[目标标题]]。"""
-    note = get_note_row(conn, note_id)
-    target = get_note_row(conn, body.target_id)
-    if note["id"] == target["id"]:
-        raise AppError(422, "VALIDATION", "不能链接到自己")
-    content, changed = add_link(note["content"], target["title"])
-    if changed:
-        with conn:
+    """Explicit target IDs produce stable links and never resolve through a duplicate title."""
+    with atomic_write(conn):
+        note = get_note_row(conn, note_id)
+        target = get_note_row(conn, body.target_id)
+        if note["id"] == target["id"]:
+            raise AppError(422, "VALIDATION", "不能链接到自己")
+        existing = resolve_links(conn, note["content"], note_id)
+        if any(link["note_id"] == target["id"] for link in existing):
+            changed = False
+        else:
+            content, changed = add_link(note["content"], target["title"], target["id"])
+        if changed:
             _write_content(conn, note_id, content)
-    return {"ok": True, "changed": changed}
+        old_type = conn.execute("SELECT kind FROM note_relation_types WHERE source_note_id = ? AND target_note_id = ?", (note_id, target["id"])).fetchone()
+        old_kind = old_type["kind"] if old_type else "related"
+        kind_changed = body.kind is not None and body.kind != old_kind
+        if kind_changed:
+            if not changed:
+                _write_content(conn, note_id, note["content"])
+            _set_relation_type(conn, note_id, target["id"], body.kind)
+    return {"ok": True, "changed": changed or kind_changed, "kind": body.kind or old_kind}
+
+
+@router.patch("/notes/{note_id}/links/{target_id}")
+def set_relation_type(note_id: str, target_id: str, body: RelationIn,
+                      conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    with atomic_write(conn):
+        note = get_note_row(conn, note_id)
+        get_note_row(conn, target_id)
+        if not any(link["note_id"] == target_id for link in resolve_links(conn, note["content"], note_id)):
+            raise AppError(404, "LINK_NOT_FOUND", "这条方向的链接不存在，请重新读取图谱")
+        old_type = conn.execute("SELECT kind FROM note_relation_types WHERE source_note_id = ? AND target_note_id = ?", (note_id, target_id)).fetchone()
+        changed = (old_type["kind"] if old_type else "related") != body.kind
+        if changed:
+            _write_content(conn, note_id, note["content"])
+            _set_relation_type(conn, note_id, target_id, body.kind)
+    return {"ok": True, "changed": changed, "kind": body.kind}
+
+
+class ResolveLinkIn(BaseModel):
+    target: str = Field(min_length=1, max_length=100)
+    target_id: str
+    base_version: int
+
+
+@router.post("/notes/{note_id}/links/resolve")
+def resolve_note_link(note_id: str, body: ResolveLinkIn, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    with atomic_write(conn):
+        note = get_note_row(conn, note_id)
+        target = get_note_row(conn, body.target_id)
+        if note_id == body.target_id:
+            raise AppError(422, "VALIDATION", "不能链接到自己")
+        content, changed = rewrite_target(note["content"], body.target, target["id"], target["title"])
+        if not changed:
+            raise AppError(409, "LINK_CHANGED", "这条链接已被修改，请重新读取笔记")
+        return update_note_fields(conn, note_id, body.base_version, {"content": content})
 
 
 @router.delete("/notes/{note_id}/links/{target_id}")
 def unlink_notes(note_id: str, target_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     """删除连线：去掉源笔记里指向目标的 [[链接]]（正文里的改回普通文字）。"""
-    note = get_note_row(conn, note_id)
-    target = get_note_row(conn, target_id)
-    content, removed = remove_link(note["content"], target["title"])
-    if removed:
-        with conn:
+    with atomic_write(conn):
+        note = get_note_row(conn, note_id)
+        get_note_row(conn, target_id)
+        content, removed = note["content"], 0
+        for link in resolve_links(conn, content, note_id):
+            if link["note_id"] == target_id:
+                content, count = remove_link(content, link["target"])
+                removed += count
+        if removed:
             _write_content(conn, note_id, content)
+            prune_relation_types(conn, note_id, content)
     return {"ok": True, "removed": removed}
 
 
 @router.get("/graph")
-def knowledge_graph(course_id: str | None = None, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def knowledge_graph(course_id: str | None = None, center_id: str | None = None,
+                    depth: int = Query(default=1, ge=1, le=2), auto_local: bool = False,
+                    conn: sqlite3.Connection = Depends(get_db)) -> dict:
     """知识关系图：笔记为节点，[[双链]] 为边（同学 B-FR-10）。"""
     sql = "SELECT id, title, course_id, content, updated_at FROM notes WHERE deleted_at IS NULL"
     params: list[Any] = []
     if course_id:
         sql += " AND course_id = ?"
         params.append(course_id)
-    rows = conn.execute(sql, params).fetchall()
-    index = title_index(conn)
-    ids = {r["id"] for r in rows}
-    cards = dict(conn.execute(
-        "SELECT source_note_id, COUNT(*) FROM cards WHERE deleted_at IS NULL GROUP BY source_note_id"
-    ).fetchall())
-    edges: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    unresolved = 0
-    for row in rows:
-        for title in extract_links(row["content"]):
-            target = index.get(title.lower())
-            if not target:
-                unresolved += 1
-                continue
-            if target["id"] == row["id"] or target["id"] not in ids:
-                continue
-            pair = (row["id"], target["id"])
-            if pair in seen:
-                continue
-            seen.add(pair)
-            edges.append({"source": row["id"], "target": target["id"]})
+    with atomic_write(conn):
+        rows = conn.execute(sql, params).fetchall()
+        resolver = LinkResolver(conn)
+        ids = {r["id"] for r in rows}
+        cards = dict(conn.execute(
+            "SELECT source_note_id, COUNT(*) FROM cards WHERE deleted_at IS NULL GROUP BY source_note_id"
+        ).fetchall())
+        kinds = {(row["source_note_id"], row["target_note_id"]): row["kind"] for row in conn.execute("SELECT * FROM note_relation_types")}
+        edges: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        unresolved, ambiguous = 0, 0
+        for row in rows:
+            for link in resolve_links(conn, row["content"], row["id"], resolver):
+                target_id = link["note_id"]
+                if not target_id:
+                    unresolved += 1
+                    ambiguous += link["status"] == "ambiguous"
+                    continue
+                if target_id == row["id"] or target_id not in ids:
+                    continue
+                pair = (row["id"], target_id)
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                edges.append({"source": row["id"], "target": target_id, "kind": kinds.get(pair, "related")})
+    total_nodes, total_edges = len(rows), len(edges)
+    if auto_local and not center_id and total_nodes > 300:
+        center_id = rows[0]["id"]
+    if center_id:
+        if center_id not in ids:
+            raise AppError(404, "NOT_FOUND", "中心笔记不存在、已删除或不在当前学科中")
+        adjacent: dict[str, set[str]] = {}
+        for edge in edges:
+            adjacent.setdefault(edge["source"], set()).add(edge["target"])
+            adjacent.setdefault(edge["target"], set()).add(edge["source"])
+        included, frontier = {center_id}, {center_id}
+        for _ in range(depth):
+            frontier = {neighbor for node in frontier for neighbor in adjacent.get(node, ())} - included
+            included.update(frontier)
+        rows = [row for row in rows if row["id"] in included]
+        edges = [edge for edge in edges if edge["source"] in included and edge["target"] in included]
     degree: dict[str, int] = {}
     for e in edges:
         degree[e["source"]] = degree.get(e["source"], 0) + 1
         degree[e["target"]] = degree.get(e["target"], 0) + 1
     nodes = [{"id": r["id"], "title": r["title"], "course_id": r["course_id"], "degree": degree.get(r["id"], 0),
               "card_count": cards.get(r["id"], 0), "excerpt": plain_excerpt(r["content"], 80)} for r in rows]
-    return {"nodes": nodes, "edges": edges, "unresolved": unresolved}
+    return {"nodes": nodes, "edges": edges, "unresolved": unresolved, "ambiguous": ambiguous,
+            "center_id": center_id, "depth": depth if center_id else None,
+            "total_nodes": total_nodes, "total_edges": total_edges}
 
 
 @router.get("/notes/{note_id}/delete-preview")
@@ -280,9 +365,10 @@ def delete_preview(note_id: str, conn: sqlite3.Connection = Depends(get_db)) -> 
 @router.delete("/notes/{note_id}")
 def delete_note(note_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     """移入回收站：笔记与由它生成的卡片同批删除，30 天内可一起恢复（EX-09、D6）。"""
-    get_note_row(conn, note_id)
     batch, now = new_id(), now_iso()
-    with conn:
+    with atomic_write(conn):
+        note = get_note_row(conn, note_id)
+        pin_title_references(conn, note["title"])
         conn.execute("UPDATE notes SET deleted_at = ?, delete_batch_id = ? WHERE id = ?", (now, batch, note_id))
         cur = conn.execute(
             "UPDATE cards SET deleted_at = ?, delete_batch_id = ? WHERE source_note_id = ? AND deleted_at IS NULL",
@@ -293,10 +379,11 @@ def delete_note(note_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dic
 
 @router.post("/notes/{note_id}/restore")
 def restore_note(note_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    note = get_note_row(conn, note_id, include_deleted=True)
-    if not note["deleted_at"]:
-        return note_detail(conn, note)
-    with conn:
+    with atomic_write(conn):
+        note = get_note_row(conn, note_id, include_deleted=True)
+        if not note["deleted_at"]:
+            return note_detail(conn, note)
+        pin_title_references(conn, note["title"])
         conn.execute("UPDATE notes SET deleted_at = NULL, delete_batch_id = NULL, updated_at = ? WHERE id = ?",
                      (now_iso(), note_id))
         conn.execute("UPDATE cards SET deleted_at = NULL, delete_batch_id = NULL WHERE delete_batch_id = ?",
@@ -369,19 +456,10 @@ def get_revision(note_id: str, revision_id: str, conn: sqlite3.Connection = Depe
 
 
 @router.post("/notes/{note_id}/revisions/{revision_id}/restore")
-def restore_revision(note_id: str, revision_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def restore_revision(note_id: str, revision_id: str, body: RestoreRevisionIn | None = Body(default=None),
+                     conn: sqlite3.Connection = Depends(get_db)) -> dict:
     """撤销 AI 修改：先把当前内容存为一条修订，再用旧快照覆盖，所以撤销本身也能再撤销。"""
-    note = get_note_row(conn, note_id)
-    rev = conn.execute("SELECT * FROM note_revisions WHERE id = ? AND note_id = ?", (revision_id, note_id)).fetchone()
-    if rev is None:
-        raise not_found("修订记录")
-    with conn:
-        save_revision(conn, note, "before_restore")
-        conn.execute(
-            "UPDATE notes SET title = ?, content = ?, version = version + 1, updated_at = ? WHERE id = ?",
-            (rev["title"], rev["content"], now_iso(), note_id),
-        )
-    return note_detail(conn, get_note_row(conn, note_id))
+    return restore_note_revision(conn, note_id, revision_id, body.base_version if body else None)
 
 
 @router.get("/notes/{note_id}/export.md")
@@ -420,17 +498,23 @@ async def import_markdown(course_id: str = Form(...), files: list[UploadFile] = 
             failed.append({"name": name, "reason": "不是 UTF-8 编码，请转换后再导入"})
             continue
         meta, body = parse_front_matter(text.replace("\r\n", "\n"))
+        body = body.strip()
+        if len(body) > MAX_CONTENT:
+            failed.append({"name": name, "reason": f"正文有 {len(body)} 字符，超过 {MAX_CONTENT} 字符限制；请拆分文件后导入"})
+            continue
         title = (meta.get("title") or name.rsplit(".", 1)[0]).strip()[:100] or "未命名笔记"
         now, note_id = now_iso(), new_id()
         try:
             tags = clean_tags(meta.get("tags") or [])
         except AppError:
             tags = []
-        with conn:
+        with atomic_write(conn):
+            pin_title_references(conn, title)
             conn.execute(
                 "INSERT INTO notes(id, course_id, title, content, tags, version, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-                (note_id, course_id, title, body.strip()[:MAX_CONTENT], dumps(tags), now, now),
+                (note_id, course_id, title, body, dumps(tags), now, now),
             )
+            resolve_links(conn, body, note_id)
         created.append({"id": note_id, "title": title})
     return {"created": created, "failed": failed}

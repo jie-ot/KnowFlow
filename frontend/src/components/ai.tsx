@@ -26,6 +26,7 @@ const PURPOSE: Record<string, string> = {
   summarize: "总结这篇笔记的全文",
   extract: "从这篇笔记中提炼知识点",
   compose: "整理你选中的资料片段",
+  outline: "根据你所选笔记的标题和全文生成复习提纲",
   plan: "根据计划目标、进度和所选笔记的标题生成任务",
 };
 
@@ -112,6 +113,11 @@ export function useAiTask() {
             if (ok) continue;
             setState(initial);
             return false;
+          }
+          if (err.code === "STREAM_INTERRUPTED" || err.code === "STREAM_FORMAT") {
+            setState((s) => ({ ...s, running: false, draft: null,
+              error: { kind: err.code, message: err.message, retryable: true } }));
+            return true; // Keep partial text and its explicit failure state visible.
           }
           setState(initial);
           if (err.code === "NO_CONFIG") {

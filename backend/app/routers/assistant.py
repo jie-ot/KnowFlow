@@ -21,9 +21,9 @@ from ..errors import AppError
 from ..llm import gateway
 from ..llm.gateway import LLMError
 from ..llm.manual import MANUAL
-from ..logic.links import extract_links, snippet_around, title_index
+from ..logic.links import LinkResolver, extract_links, snippet_around, title_index
 from ..logic.search import search
-from ..logic.timeutil import today_str
+from ..logic.timeutil import parse_day, today_str
 from .ai import _default_config, _sse
 
 router = APIRouter(prefix="/api", tags=["AI 助手"])
@@ -56,7 +56,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": "读取一篇笔记的全文（过长会截断）、标签、双链和反向链接。按标题查找，找不到时按关键词找最相关的一篇。",
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string", "description": "笔记标题或关键词"},
-        }, "required": ["title"]},
+            "note_id": {"type": "string", "description": "明确的笔记 ID；同名笔记需用 ID 选择"},
+        }},
     }},
     {"type": "function", "function": {
         "name": "list_tasks",
@@ -78,6 +79,9 @@ TOOLS: list[dict[str, Any]] = [
         }},
     }},
 ]
+
+for _tool in TOOLS:
+    _tool["function"]["parameters"]["additionalProperties"] = False
 
 TOOL_LABEL = {
     "search_knowflow": "搜索",
@@ -188,7 +192,43 @@ def _clip(data: Any) -> str:
     return text if len(text) <= TOOL_RESULT_CHARS else text[:TOOL_RESULT_CHARS] + "…（已截断）"
 
 
+def validate_tool_args(name: str, args: Any) -> dict[str, Any]:
+    schema = next((tool["function"]["parameters"] for tool in TOOLS if tool["function"]["name"] == name), None)
+    if schema is None:
+        raise LLMError("STRUCTURE", f"模型请求了未知工具 {name}")
+    if not isinstance(args, dict):
+        raise LLMError("STRUCTURE", f"工具 {name} 的参数应为 JSON 对象")
+    properties = schema["properties"]
+    if set(args) - set(properties):
+        raise LLMError("STRUCTURE", f"工具 {name} 包含未定义字段：{', '.join(sorted(set(args) - set(properties)))}")
+    for key in schema.get("required", []):
+        if key not in args or not args[key]:
+            raise LLMError("STRUCTURE", f"工具 {name} 缺少参数 {key}")
+    for key, value in args.items():
+        expected = properties[key]["type"]
+        if (expected == "string" and not isinstance(value, str)) or (expected == "boolean" and type(value) is not bool):
+            raise LLMError("STRUCTURE", f"工具参数 {key} 的类型应为 {expected}")
+        if isinstance(value, str) and len(value) > 500:
+            raise LLMError("STRUCTURE", f"工具参数 {key} 超过 500 字符限制")
+    if name == "read_note" and not (args.get("title", "").strip() or args.get("note_id", "").strip()):
+        raise LLMError("STRUCTURE", "读取笔记需要提供 title 或 note_id")
+    if name == "search_knowflow":
+        if not args["query"].strip():
+            raise LLMError("STRUCTURE", "搜索 query 不能为空")
+        types = {t.strip() for t in args.get("types", "").split(",") if t.strip()}
+        if types - {"note", "material", "card"}:
+            raise LLMError("STRUCTURE", "搜索类型只能是 note、material、card")
+    if name == "list_tasks":
+        for key in ("start", "end"):
+            if args.get(key) and parse_day(args[key]) is None:
+                raise LLMError("STRUCTURE", f"工具参数 {key} 日期应为 YYYY-MM-DD")
+        if args.get("start") and args.get("end") and args["start"] > args["end"]:
+            raise LLMError("STRUCTURE", "工具参数 start 不能晚于 end")
+    return args
+
+
 def run_tool(conn: sqlite3.Connection, name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(name, args)
     today = today_str(_day_start(conn))
     if name == "search_knowflow":
         types = {t.strip() for t in str(args.get("types") or "note,material,card").split(",") if t.strip()}
@@ -199,26 +239,39 @@ def run_tool(conn: sqlite3.Connection, name: str, args: dict[str, Any]) -> str:
         key = str(args.get("title") or "").strip()
         index = title_index(conn)
         hit = index.get(key.lower())
-        note_id = hit["id"] if hit else None
+        note_id = args.get("note_id") or (hit["id"] if hit else None)
+        exact = conn.execute(
+            "SELECT id, title, course_id FROM notes WHERE deleted_at IS NULL AND lower(trim(title)) = lower(?)",
+            (key,),
+        ).fetchall() if key and not args.get("note_id") else []
+        if len(exact) > 1:
+            return _clip({"error": "存在同名笔记，请用 note_id 明确选择", "candidates": [dict(r) for r in exact]})
         if not note_id and key:
             found = search(conn, key, types={"note"}, limit=1)
             note_id = found[0]["id"] if found else None
         if not note_id:
             return _clip({"error": f"没有找到标题或内容包含「{key}」的笔记"})
         row = conn.execute(
-            "SELECT n.*, c.name AS course FROM notes n JOIN courses c ON c.id = n.course_id WHERE n.id = ?", (note_id,)
+            "SELECT n.*, c.name AS course FROM notes n JOIN courses c ON c.id = n.course_id "
+            "WHERE n.id = ? AND n.deleted_at IS NULL", (note_id,)
         ).fetchone()
+        if row is None:
+            return _clip({"error": "笔记不存在或已删除"})
         backlinks = []
+        resolver = LinkResolver(conn)
         for other in conn.execute(
-            "SELECT title, content FROM notes WHERE deleted_at IS NULL AND id != ? AND content LIKE ?", (note_id, "%[[%")
+            "SELECT id, title, content FROM notes WHERE deleted_at IS NULL AND id != ? AND content LIKE ?", (note_id, "%[[%")
         ):
-            if any(t.lower() == row["title"].strip().lower() for t in extract_links(other["content"])):
-                backlinks.append({"title": other["title"], "context": snippet_around(other["content"], row["title"])})
+            matches = [target for target in extract_links(other["content"])
+                       if resolver.resolve(target, other["id"], bind=False)["note_id"] == note_id]
+            if matches:
+                backlinks.append({"id": other["id"], "title": other["title"],
+                                  "context": snippet_around(other["content"], matches[0])})
         cards = conn.execute(
             "SELECT COUNT(*) FROM cards WHERE source_note_id = ? AND deleted_at IS NULL", (note_id,)
         ).fetchone()[0]
         return _clip({
-            "title": row["title"], "course": row["course"], "tags": json.loads(row["tags"] or "[]"),
+            "id": row["id"], "title": row["title"], "course": row["course"], "tags": json.loads(row["tags"] or "[]"),
             "updated_at": row["updated_at"][:10], "card_count": cards,
             "links_to": extract_links(row["content"]), "backlinks": backlinks[:10],
             "content": row["content"][:5000] + ("…（后面省略）" if len(row["content"]) > 5000 else ""),
@@ -286,6 +339,7 @@ async def assistant_chat(body: ChatIn) -> StreamingResponse:
             for _round in range(MAX_ROUNDS):
                 parts: list[str] = []
                 calls: list[dict[str, Any]] = []
+                finish_reason = None
                 try:
                     if wrote:
                         yield _sse("delta", {"text": "\n\n"})
@@ -301,13 +355,23 @@ async def assistant_chat(body: ChatIn) -> StreamingResponse:
                             yield _sse("delta", {"text": value})
                         elif kind == "tool_calls":
                             calls = value
+                        elif kind == "finish":
+                            finish_reason = value
                 except LLMError as exc:
                     # 有的模型不支持工具调用：去掉工具，只靠手册和数据概况再答一次
                     if use_tools and exc.kind == "BAD_REQUEST" and not parts:
                         use_tools = False
                         continue
                     raise
+                if finish_reason == "length":
+                    raise LLMError("TRUNCATED", "助手回答达到输出上限，以下内容尚未完整，请缩小问题范围后重试")
+                if finish_reason == "content_filter":
+                    raise LLMError("STRUCTURE", "服务商停止了回答，内容尚未完整")
+                if finish_reason == "tool_calls" and not calls:
+                    raise LLMError("STRUCTURE", "模型声明调用工具，但没有返回工具调用参数")
                 if not calls:
+                    if not "".join(parts).strip():
+                        raise LLMError("EMPTY")
                     yield _sse("done", {})
                     return
                 messages.append({
@@ -322,15 +386,16 @@ async def assistant_chat(body: ChatIn) -> StreamingResponse:
                         try:
                             args = json.loads(c["arguments"] or "{}")
                         except json.JSONDecodeError:
-                            args = {}
+                            raise LLMError("JSON", f"工具 {c['name']} 的参数不是有效 JSON") from None
+                        args = validate_tool_args(c["name"], args)
                         hint = args.get("title") or args.get("query") or args.get("plan") or args.get("course") or ""
                         yield _sse("tool", {"name": c["name"], "label": TOOL_LABEL.get(c["name"], c["name"]),
                                             "detail": str(hint)[:40]})
-                        result = run_tool(db, c["name"], args if isinstance(args, dict) else {})
+                        result = run_tool(db, c["name"], args)
                         messages.append({"role": "tool", "tool_call_id": c["id"] or f"call_{i}", "content": result})
                 finally:
                     db.close()
-            yield _sse("done", {})
+            raise LLMError("TRUNCATED", "助手达到工具调用轮数上限，回答尚未完成，请缩小问题范围后重试")
         except LLMError as exc:
             yield _sse("error", {"error": exc.to_dict()})
         except Exception as exc:  # noqa: BLE001
@@ -368,6 +433,7 @@ async def suggest_links(body: SuggestIn) -> dict:
             params.append(body.course_id)
         rows = conn.execute(sql + " ORDER BY updated_at DESC LIMIT 80", params).fetchall()
         courses = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM courses")}
+        resolver = LinkResolver(conn)
     finally:
         conn.close()
     if len(rows) < 2:
@@ -379,15 +445,40 @@ async def suggest_links(body: SuggestIn) -> dict:
     lines = []
     for key, r in alias.items():
         out = extract_links(r["content"])
-        existing.update((r["title"].lower(), t.lower()) for t in out)
+        for target in out:
+            resolved = resolver.resolve(target, r["id"], bind=False)
+            if resolved["note_id"]:
+                existing.add((r["id"], resolved["note_id"]))
         lines.append(f"{key}｜{r['title']}｜{courses.get(r['course_id'], '')}｜{plain_excerpt(r['content'], 120)}"
                      f"｜已链接：{'、'.join(out) or '无'}")
     messages = [{"role": "system", "content": SUGGEST_PROMPT}, {"role": "user", "content": "\n".join(lines)}]
     try:
-        result = await gateway.chat(cfg, messages, max_tokens=1500, temperature=0.2,
-                                    idle_timeout=float(settings["idle_timeout_s"]),
-                                    total_timeout=float(settings["total_timeout_s"]), json_mode=cfg.json_mode)
-        data = gateway.parse_json_object(result.content)
+        for attempt in range(2):
+            try:
+                result = await gateway.chat(cfg, messages, max_tokens=cfg.max_output_tokens, temperature=0.2,
+                                            idle_timeout=float(settings["idle_timeout_s"]),
+                                            total_timeout=float(settings["total_timeout_s"]), json_mode=cfg.json_mode)
+                if result.finish_reason == "length":
+                    raise LLMError("TRUNCATED", "推荐结果被输出长度上限截断，请提高模型配置中的最大输出 tokens，或选择单个学科后重试")
+                if not isinstance(result.content, str) or not result.content.strip():
+                    raise LLMError("EMPTY", "模型没有返回推荐正文，请检查模型配置后重试")
+                data = gateway.parse_json_object(result.content)
+                if not isinstance(data.get("links"), list) or any(
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("from"), str)
+                    or not isinstance(item.get("to"), str)
+                    or (item.get("reason") is not None and not isinstance(item["reason"], str))
+                    for item in data["links"]
+                ):
+                    raise LLMError("STRUCTURE", '推荐结果结构不正确，需要包含 links 数组及 from、to 笔记编号')
+                break
+            except LLMError as exc:
+                if attempt or exc.kind not in {"EMPTY", "JSON", "STRUCTURE", "TRUNCATED", "PARSE"}:
+                    raise
+                messages.append({"role": "user", "content":
+                    '上次输出无法解析。请仅返回完整 JSON 对象，格式为 '
+                    '{"links":[{"from":"N1","to":"N2","reason":"关联理由"}]}。'
+                    '没有推荐时返回 {"links":[]}；不要输出分析过程或其他文字。'})
     except LLMError as exc:
         raise AppError(502, f"LLM_{exc.kind}", exc.message, retryable=exc.retryable) from None
     links, seen = [], set()
@@ -397,8 +488,8 @@ async def suggest_links(body: SuggestIn) -> dict:
         a, b = alias.get(str(item.get("from"))), alias.get(str(item.get("to")))
         if not a or not b or a["id"] == b["id"]:
             continue
-        pair = (a["title"].lower(), b["title"].lower())
-        if pair in existing or (pair[1], pair[0]) in existing or pair in seen:
+        pair = (a["id"], b["id"])
+        if pair in existing or (pair[1], pair[0]) in existing or pair in seen or (pair[1], pair[0]) in seen:
             continue
         seen.add(pair)
         links.append({"source": a["id"], "target": b["id"], "source_title": a["title"], "target_title": b["title"],

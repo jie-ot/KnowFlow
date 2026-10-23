@@ -19,6 +19,8 @@ from ..errors import AppError, not_found
 from ..logic.extract import WARNING_TEXT, check_content_type, detect_format, extract
 from ..logic.text import char_count
 from ..repo import get_course
+from ..services.coordination import current_generation, generation_scope
+from ..services.transactions import atomic_write
 
 router = APIRouter(prefix="/api/materials", tags=["资料"])
 
@@ -45,20 +47,37 @@ def _unit_out(row: sqlite3.Row) -> dict[str, Any]:
     return data
 
 
-def run_extraction(material_id: str) -> None:
-    """后台解析：uploaded → extracting → ready / partial / failed。"""
+def run_extraction(material_id: str, attempt: int = 0, generation: int | None = None) -> None:
+    """Only the queued attempt may start and replace extracted units.
+
+    Retry advances parse_attempt. An interrupted older worker may finish its
+    expensive file read, but cannot overwrite a newer result or its failure.
+    """
+    generation = current_generation() if generation is None else generation
     conn = connect()
+    claimed = False
     try:
-        row = conn.execute("SELECT * FROM materials WHERE id = ?", (material_id,)).fetchone()
-        if row is None:
-            return
-        with conn:
-            conn.execute("UPDATE materials SET status = 'extracting', updated_at = ? WHERE id = ?",
-                         (now_iso(), material_id))
+        with generation_scope(generation), atomic_write(conn):
+            started = conn.execute(
+                "UPDATE materials SET status = 'extracting', updated_at = ? "
+                "WHERE id = ? AND parse_attempt = ? AND status = 'uploaded'",
+                (now_iso(), material_id, attempt),
+            )
+            if started.rowcount != 1:
+                return
+            claimed = True
+            row = conn.execute("SELECT * FROM materials WHERE id = ?", (material_id,)).fetchone()
         path = config.MATERIALS_DIR / (row["id"] + row["ext"])
         result = extract(path, row["format"], row["ext"])
         total_chars = sum(char_count(u.text) for u in result.units)
-        with conn:
+        with generation_scope(generation), atomic_write(conn):
+            completed = conn.execute(
+                "UPDATE materials SET status = ?, error_code = ?, error_message = ?, updated_at = ? "
+                "WHERE id = ? AND parse_attempt = ? AND status = 'extracting'",
+                (result.status, result.error_code, result.error_message, now_iso(), material_id, attempt),
+            )
+            if completed.rowcount != 1 or result.status == "failed":
+                return
             conn.execute("DELETE FROM material_units WHERE material_id = ?", (material_id,))
             conn.executemany(
                 "INSERT INTO material_units(id, material_id, kind, ordinal, locator, label, text, warnings) "
@@ -67,10 +86,23 @@ def run_extraction(material_id: str) -> None:
                  for u in result.units],
             )
             conn.execute(
-                "UPDATE materials SET status = ?, error_code = ?, error_message = ?, unit_count = ?, "
-                "char_count = ?, updated_at = ? WHERE id = ?",
-                (result.status, result.error_code, result.error_message, len(result.units),
-                 total_chars, now_iso(), material_id),
+                "UPDATE materials SET unit_count = ?, char_count = ? WHERE id = ?",
+                (len(result.units), total_chars, material_id),
+            )
+    except AppError:
+        # In particular, an old generation must never write to a restored DB.
+        raise
+    except Exception as exc:
+        if not claimed:
+            raise
+        # Also covers normalization or transaction/INSERT failures. The failed
+        # replacement transaction rolls back before this status-only update.
+        # If the DB itself cannot be written, propagate that error honestly.
+        with generation_scope(generation), atomic_write(conn):
+            conn.execute(
+                "UPDATE materials SET status = 'failed', error_code = 'unexpected', error_message = ?, "
+                "updated_at = ? WHERE id = ? AND parse_attempt = ? AND status = 'extracting'",
+                (f"解析意外中断，可重试；原有片段已保留（{type(exc).__name__}）", now_iso(), material_id, attempt),
             )
     finally:
         conn.close()
@@ -138,7 +170,7 @@ async def upload_materials(
             path.unlink(missing_ok=True)  # 不留下“已上传成功”的假记录（NFR-07）
             results.append({"name": name, "ok": False, "code": "storage", "message": "写入数据库失败"})
             continue
-        background.add_task(run_extraction, material_id)
+        background.add_task(run_extraction, material_id, 0, current_generation())
         results.append({"name": name, "ok": True, "material_id": material_id})
     return {"results": results}
 
@@ -194,13 +226,21 @@ def edit_unit(material_id: str, unit_id: str, body: UnitPatch, conn: sqlite3.Con
 @router.post("/{material_id}/retry")
 def retry_extraction(material_id: str, background: BackgroundTasks,
                      conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    material = _material(conn, material_id)
-    if material["status"] == "extracting":
-        raise AppError(409, "BUSY", "这份资料正在解析")
-    with conn:
-        conn.execute("UPDATE materials SET status = 'uploaded', updated_at = ? WHERE id = ?", (now_iso(), material_id))
-    background.add_task(run_extraction, material_id)
-    return {"ok": True}
+    with atomic_write(conn):
+        material = _material(conn, material_id)
+        if material["status"] in ("uploaded", "extracting"):
+            raise AppError(409, "BUSY", "这份资料已在解析队列中，请等待或先取消")
+        path = config.MATERIALS_DIR / (material["id"] + material["ext"])
+        if not path.is_file():
+            raise AppError(409, "SOURCE_MISSING", "原件文件不存在，需要重新上传；已提取片段会保留")
+        attempt = material["parse_attempt"] + 1
+        conn.execute(
+            "UPDATE materials SET status = 'uploaded', parse_attempt = ?, error_code = NULL, "
+            "error_message = NULL, updated_at = ? WHERE id = ?",
+            (attempt, now_iso(), material_id),
+        )
+    background.add_task(run_extraction, material_id, attempt, current_generation())
+    return {"ok": True, "parse_attempt": attempt}
 
 
 @router.get("/{material_id}/file")

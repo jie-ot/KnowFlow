@@ -9,13 +9,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import config
 from .db import connect, init_db, now_iso
 from .errors import AppError, install_handlers
-from .routers import ai, assistant, cards, courses, extras, materials, misc, notes, plans
+from .routers import ai, assistant, cards, courses, extras, learning, materials, misc, notes, plans
 from .seed import seed
+from .services.coordination import async_request_scope, current_generation, dataset_token
 
 
 _LOCAL = re.compile(config.LOCAL_ORIGIN_REGEX)
@@ -45,9 +47,25 @@ class GuardMiddleware:
         async def send_with_id(message):  # type: ignore[no-untyped-def]
             if message["type"] == "http.response.start":
                 message.setdefault("headers", []).append((b"x-request-id", request_id.encode()))
+                message["headers"].append((b"x-knowflow-dataset", dataset_token().encode()))
             await send(message)
 
-        await self.app(scope, receive, send_with_id)
+        # Keep the lease until streams and BackgroundTasks have finished. Restore
+        # runs outside this lease and waits for all existing operations to drain.
+        if scope.get("path", "").startswith("/api/") and scope["path"].rstrip("/") != "/api/restore":
+            entered_generation = current_generation()
+            async with async_request_scope() as generation:
+                expected_dataset = headers.get(b"x-knowflow-dataset", b"").decode()
+                if scope["method"] not in ("GET", "HEAD", "OPTIONS") and (
+                    generation != entered_generation or (expected_dataset and expected_dataset != dataset_token())
+                ):
+                    response = JSONResponse({"error": {"code": "RESTORE_INTERRUPTED", "message": "数据已恢复，请刷新并确认后重试",
+                                                       "retryable": True, "request_id": request_id}}, status_code=409)
+                    await response(scope, receive, send_with_id)
+                    return
+                await self.app(scope, receive, send_with_id)
+        else:
+            await self.app(scope, receive, send_with_id)
 
 
 def startup_tasks() -> None:
@@ -82,10 +100,10 @@ app.add_middleware(
     allow_origin_regex=config.LOCAL_ORIGIN_REGEX,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "X-Request-ID"],
+    expose_headers=["Content-Disposition", "X-Request-ID", "X-KnowFlow-Dataset"],
 )
 install_handlers(app)
-for module in (courses, notes, materials, cards, plans, ai, assistant, extras, misc):
+for module in (courses, notes, materials, cards, plans, learning, ai, assistant, extras, misc):
     app.include_router(module.router)
 
 

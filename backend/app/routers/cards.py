@@ -14,6 +14,7 @@ from ..errors import AppError
 from ..logic.sm2 import GRADE_Q, SM2State, schedule
 from ..logic.timeutil import add_days, logical_day, now_local, today_str
 from ..repo import card_to_dict, get_card_row, get_course, get_note_row
+from ..services.idempotency import perform
 
 router = APIRouter(prefix="/api", tags=["复习"])
 
@@ -35,6 +36,8 @@ class CardPatch(BaseModel):
 
 class ReviewIn(BaseModel):
     grade: Literal["forgot", "hard", "good"]
+    operation_id: str | None = Field(default=None, min_length=1, max_length=120)
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 def _day_start(conn: sqlite3.Connection) -> int:
@@ -122,16 +125,20 @@ def review_queue(course_id: str | None = None, conn: sqlite3.Connection = Depend
 
 @router.post("/review/{card_id}")
 def submit_review(card_id: str, body: ReviewIn, conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    """提交自评：同一事务内更新卡片并追加复习记录（FR-15）。"""
-    card = get_card_row(conn, card_id)
-    moment = now_local()
-    today = logical_day(moment, _day_start(conn)).isoformat()
-    old = SM2State(n=card["n"], interval=card["interval"], ef=card["ef"])
-    new = schedule(old, body.grade)
-    due = add_days(today, new.interval)
-    with conn:
+    """同一评分操作仅执行一次；之后的新一轮用新的操作编号及评分版本。"""
+    def apply() -> dict:
+        card = get_card_row(conn, card_id)
+        if body.expected_revision is not None and card["review_revision"] != body.expected_revision:
+            raise AppError(409, "REVIEW_CONFLICT", "这张卡片已在其他窗口评分，请更新复习队列",
+                           extra={"current_revision": card["review_revision"]})
+        moment = now_local()
+        today = logical_day(moment, _day_start(conn)).isoformat()
+        old = SM2State(n=card["n"], interval=card["interval"], ef=card["ef"])
+        new = schedule(old, body.grade)
+        due = add_days(today, new.interval)
         conn.execute(
-            "UPDATE cards SET n = ?, interval = ?, ef = ?, due = ?, forgot_count = forgot_count + ?, updated_at = ? "
+            "UPDATE cards SET n = ?, interval = ?, ef = ?, due = ?, forgot_count = forgot_count + ?, updated_at = ?, "
+            "review_revision = review_revision + 1 "
             "WHERE id = ?",
             (new.n, new.interval, new.ef, due, 1 if body.grade == "forgot" else 0, now_iso(), card_id),
         )
@@ -141,7 +148,10 @@ def submit_review(card_id: str, body: ReviewIn, conn: sqlite3.Connection = Depen
             (new_id(), card_id, card["course_id"], body.grade, GRADE_Q[body.grade],
              moment.isoformat(timespec="seconds"), today, old.interval, new.interval, old.ef, new.ef),
         )
-    return card_to_dict(get_card_row(conn, card_id))
+        return card_to_dict(get_card_row(conn, card_id))
+
+    return perform(conn, "review", body.operation_id,
+                   {"card_id": card_id, "grade": body.grade, "expected_revision": body.expected_revision}, apply)
 
 
 @router.get("/stats")

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -46,10 +46,13 @@ MESSAGES = {
     "NETWORK": "无法连接到服务商，请检查网络或 Base URL",
     "EMPTY": "模型没有返回内容",
     "PARSE": "模型返回的格式不正确",
+    "JSON": "模型返回的 JSON 无法解析",
+    "STRUCTURE": "模型返回的字段或数据类型不符合要求",
+    "TRUNCATED": "模型输出被截断，结果尚未完成，请缩小范围或增加输出上限后重试",
     "UNKNOWN": "服务商返回了未知错误",
 }
 
-RETRYABLE = {"RATE_LIMIT", "SERVER", "OVERLOADED", "TIMEOUT", "NETWORK", "EMPTY", "PARSE"}
+RETRYABLE = {"RATE_LIMIT", "SERVER", "OVERLOADED", "TIMEOUT", "NETWORK", "EMPTY", "PARSE", "JSON", "STRUCTURE", "TRUNCATED"}
 
 
 class LLMError(Exception):
@@ -156,6 +159,35 @@ def _wrap_transport_error(exc: Exception, cfg: ModelConfig) -> LLMError:
     return LLMError("UNKNOWN", detail=f"{type(exc).__name__}")
 
 
+def _stream_choice(data: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    try:
+        obj = json.loads(data)
+    except json.JSONDecodeError:
+        raise LLMError("JSON", "服务商返回了无法解析的流式 JSON") from None
+    if not isinstance(obj, dict):
+        raise LLMError("STRUCTURE", "流式响应应为 JSON 对象")
+    if obj.get("error"):
+        raise LLMError("UNKNOWN", detail=_provider_message(data))
+    choices, usage = obj.get("choices"), obj.get("usage")
+    if usage is not None and not isinstance(usage, dict):
+        raise LLMError("STRUCTURE", "响应 usage 应为对象")
+    if choices is None and usage is not None:
+        return None, usage
+    if not isinstance(choices, list) or (choices and not isinstance(choices[0], dict)):
+        raise LLMError("STRUCTURE", "响应 choices 应为对象数组")
+    if not choices:
+        return None, usage
+    choice = choices[0]
+    delta = choice.get("delta")
+    if delta is not None and not isinstance(delta, dict):
+        raise LLMError("STRUCTURE", "响应 delta 应为对象")
+    if delta and delta.get("content") is not None and not isinstance(delta["content"], str):
+        raise LLMError("STRUCTURE", "响应 content 应为文字")
+    if choice.get("finish_reason") is not None and not isinstance(choice["finish_reason"], str):
+        raise LLMError("STRUCTURE", "响应 finish_reason 应为文字")
+    return choice, usage
+
+
 async def stream_chat(
     cfg: ModelConfig,
     messages: list[dict[str, str]],
@@ -165,6 +197,7 @@ async def stream_chat(
     idle_timeout: float,
     total_timeout: float,
     json_mode: bool = False,
+    before_request: Callable[[], None] | None = None,
 ) -> AsyncIterator[tuple[str, Any]]:
     """流式调用。依次产出 ("delta", 文本)、("finish", 原因)、("usage", 用量)。
 
@@ -181,7 +214,11 @@ async def stream_chat(
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     deadline = time.monotonic() + total_timeout
+    terminated = False
+    saw_packet = False
     async with _semaphore():
+        if before_request is not None:
+            before_request()
         try:
             async with httpx.AsyncClient(timeout=_timeout(idle_timeout), transport=TRANSPORT) as client:
                 async with client.stream("POST", endpoint(cfg.base_url), json=payload,
@@ -202,27 +239,25 @@ async def stream_chat(
                         if not line or line.startswith(":") or not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
+                        saw_packet = True
                         if data == "[DONE]":
+                            terminated = True
                             break
-                        try:
-                            obj = json.loads(data)
-                        except json.JSONDecodeError:
+                        choice, usage = _stream_choice(data)
+                        if usage:
+                            yield "usage", usage
+                        if choice is None:
                             continue
-                        if not isinstance(obj, dict):
-                            continue
-                        if obj.get("error"):
-                            raise LLMError("UNKNOWN", detail=_provider_message(data))
-                        if obj.get("usage"):
-                            yield "usage", obj["usage"]
-                        choices = obj.get("choices") or []
-                        if not choices:
-                            continue
-                        choice = choices[0]
                         delta = (choice.get("delta") or {}).get("content")
                         if delta:
                             yield "delta", delta
                         if choice.get("finish_reason"):
+                            terminated = True
                             yield "finish", choice["finish_reason"]
+                    if not terminated:
+                        if not saw_packet:
+                            raise LLMError("EMPTY")
+                        raise LLMError("TRUNCATED", "连接在完整结束标记之前关闭，结果尚未完成")
         except LLMError:
             raise
         except (httpx.HTTPError, TimeoutError) as exc:
@@ -253,6 +288,8 @@ async def stream_chat_tools(
     if tools:
         payload["tools"] = tools
     deadline = time.monotonic() + total_timeout
+    terminated = False
+    saw_packet = False
     calls: dict[int, dict[str, Any]] = {}
     async with _semaphore():
         try:
@@ -275,31 +312,43 @@ async def stream_chat_tools(
                         if not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
+                        saw_packet = True
                         if data == "[DONE]":
+                            terminated = True
                             break
-                        try:
-                            obj = json.loads(data)
-                        except json.JSONDecodeError:
+                        choice, _usage = _stream_choice(data)
+                        if choice is None:
                             continue
-                        if not isinstance(obj, dict):
-                            continue
-                        if obj.get("error"):
-                            raise LLMError("UNKNOWN", detail=_provider_message(data))
-                        choices = obj.get("choices") or []
-                        if not choices:
-                            continue
-                        choice = choices[0]
                         delta = choice.get("delta") or {}
                         if delta.get("content"):
                             yield "delta", delta["content"]
-                        for tc in delta.get("tool_calls") or []:
-                            slot = calls.setdefault(int(tc.get("index", 0)), {"id": "", "name": "", "arguments": ""})
+                        tool_calls = delta.get("tool_calls")
+                        if tool_calls is not None and not isinstance(tool_calls, list):
+                            raise LLMError("STRUCTURE", "工具调用应为数组")
+                        for tc in tool_calls or []:
+                            if not isinstance(tc, dict) or type(tc.get("index")) is not int or not 0 <= tc["index"] < 32:
+                                raise LLMError("STRUCTURE", "工具调用 index 应为 0–31 的整数")
+                            if tc.get("id") is not None and not isinstance(tc["id"], str):
+                                raise LLMError("STRUCTURE", "工具调用 id 应为文字")
+                            fn = tc.get("function")
+                            if fn is not None and not isinstance(fn, dict):
+                                raise LLMError("STRUCTURE", "工具调用 function 应为对象")
+                            fn = fn or {}
+                            if any(fn.get(key) is not None and not isinstance(fn[key], str) for key in ("name", "arguments")):
+                                raise LLMError("STRUCTURE", "工具名称和参数应为文字")
+                            slot = calls.setdefault(tc["index"], {"id": "", "name": "", "arguments": ""})
                             slot["id"] = tc.get("id") or slot["id"]
-                            fn = tc.get("function") or {}
                             slot["name"] += fn.get("name") or ""
                             slot["arguments"] += fn.get("arguments") or ""
+                            if len(slot["arguments"]) > 16_000 or len(slot["name"]) > 100:
+                                raise LLMError("STRUCTURE", "工具调用名称或参数超过长度限制")
                         if choice.get("finish_reason"):
+                            terminated = True
                             yield "finish", choice["finish_reason"]
+                    if not terminated:
+                        if not saw_packet:
+                            raise LLMError("EMPTY")
+                        raise LLMError("TRUNCATED", "连接在完整结束标记之前关闭，回答尚未完成")
         except LLMError:
             raise
         except (httpx.HTTPError, TimeoutError) as exc:
@@ -317,6 +366,7 @@ async def chat(
     idle_timeout: float,
     total_timeout: float,
     json_mode: bool = False,
+    before_request: Callable[[], None] | None = None,
 ) -> ChatResult:
     """非流式调用。"""
     payload: dict[str, Any] = {
@@ -330,6 +380,8 @@ async def chat(
         payload["response_format"] = {"type": "json_object"}
     started = time.monotonic()
     async with _semaphore():
+        if before_request is not None:
+            before_request()
         try:
             async with asyncio.timeout(total_timeout):
                 async with httpx.AsyncClient(timeout=_timeout(idle_timeout), transport=TRANSPORT) as client:
@@ -339,12 +391,29 @@ async def chat(
             raise _wrap_transport_error(exc, cfg) from None
     if resp.status_code != 200:
         raise map_http_error(resp.status_code, resp.text)
+    if not resp.content.strip():
+        raise LLMError("EMPTY")
     try:
         data = resp.json()
+    except ValueError:
+        raise LLMError("JSON", "服务商响应不是有效 JSON", detail=resp.text[:300]) from None
+    try:
+        if not isinstance(data, dict) or not isinstance(data.get("choices"), list):
+            raise TypeError
         choice = data["choices"][0]
-        content = (choice.get("message") or {}).get("content") or ""
-    except (ValueError, KeyError, IndexError, TypeError):
-        raise LLMError("PARSE", "服务商返回的不是 OpenAI 兼容格式", detail=resp.text[:300]) from None
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            raise TypeError
+        content = choice["message"].get("content")
+        if content is None:
+            content = ""
+        if not isinstance(content, str):
+            raise TypeError
+        if choice.get("finish_reason") is not None and not isinstance(choice["finish_reason"], str):
+            raise TypeError
+        if data.get("usage") is not None and not isinstance(data["usage"], dict):
+            raise TypeError
+    except (KeyError, IndexError, TypeError):
+        raise LLMError("STRUCTURE", "服务商返回的不是 OpenAI 兼容格式", detail=resp.text[:300]) from None
     return ChatResult(
         content=content,
         finish_reason=choice.get("finish_reason"),
@@ -355,7 +424,11 @@ async def chat(
 
 def parse_json_object(text: str) -> dict[str, Any]:
     """从模型输出中取出 JSON 对象：容忍 ```json 包裹和前后多余文字。"""
+    if not isinstance(text, str):
+        raise LLMError("STRUCTURE", "模型正文应为文字")
     cleaned = text.strip()
+    if not cleaned:
+        raise LLMError("EMPTY")
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else ""
         if cleaned.rstrip().endswith("```"):
@@ -365,13 +438,13 @@ def parse_json_object(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         start, end = cleaned.find("{"), cleaned.rfind("}")
         if start == -1 or end <= start:
-            raise LLMError("PARSE") from None
+            raise LLMError("JSON") from None
         try:
             value = json.loads(cleaned[start:end + 1])
         except json.JSONDecodeError:
-            raise LLMError("PARSE") from None
+            raise LLMError("JSON") from None
     if isinstance(value, list):
         value = {"items": value}
     if not isinstance(value, dict):
-        raise LLMError("PARSE")
+        raise LLMError("STRUCTURE", "模型 JSON 应为对象")
     return value

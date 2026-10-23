@@ -9,15 +9,18 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
-import { api, ApiError, Course, fetcher, GraphData, GraphNode } from "@/lib/api";
+import { api, ApiError, Course, fetcher, GraphData, GraphNode, RelationKind } from "@/lib/api";
 import { colorOf } from "@/lib/format";
 import { useAiConsent } from "@/components/ai";
 import { Dot, Spinner, useToast } from "@/components/ui";
+import { connectSuggestions } from "@/lib/graph-links";
+import { isNoteListCacheKey } from "@/lib/note-list-cache";
+import { directedLine, relationDescriptions, relationLabels } from "@/lib/graph-relations";
 
 type Suggestion = { source: string; target: string; source_title: string; target_title: string; reason: string };
 
 type SimNode = GraphNode & SimulationNodeDatum & { r: number };
-type SimLink = SimulationLinkDatum<SimNode>;
+type SimLink = SimulationLinkDatum<SimNode> & { kind: RelationKind };
 type View = { x: number; y: number; k: number };
 
 const radius = (n: GraphNode) => 5 + Math.sqrt(n.degree) * 3.2 + (n.card_count > 0 ? 1.5 : 0);
@@ -35,30 +38,66 @@ function Graph() {
   const params = useSearchParams();
   const router = useRouter();
   const course = params.get("course");
-  const { data, mutate } = useSWR<GraphData>(`/api/graph${course ? `?course_id=${course}` : ""}`, fetcher);
+  const requestedCenter = params.get("center");
+  const requestedDepth = params.get("depth") === "2" ? 2 : 1;
+  const graphParams = new URLSearchParams();
+  if (course) graphParams.set("course_id", course);
+  if (requestedCenter) { graphParams.set("center_id", requestedCenter); graphParams.set("depth", String(requestedDepth)); }
+  else if (params.get("scope") !== "all") graphParams.set("auto_local", "true");
+  const { data, error: graphError, isLoading: graphLoading, mutate } = useSWR<GraphData>(`/api/graph?${graphParams.toString()}`, fetcher);
+  const { data: noteIndex } = useSWR<{ id: string; title: string; course_id: string }[]>("/api/notes/index", fetcher);
+  const [centerQuery, setCenterQuery] = useState("");
+  const setRange = (centerId: string | null, depth = requestedDepth) => {
+    const next = new URLSearchParams(params.toString());
+    if (centerId) { next.set("center", centerId); next.set("depth", String(depth)); next.delete("scope"); }
+    else { next.delete("center"); next.delete("depth"); next.set("scope", "all"); }
+    router.replace(`/graph?${next.toString()}`);
+  };
   const toast = useToast();
   const askConsent = useAiConsent();
   const [linking, setLinking] = useState(false);
+  const [newKind, setNewKind] = useState<RelationKind>("related");
+  const [typeSaving, setTypeSaving] = useState(false);
   const [linkDrag, setLinkDrag] = useState<{ from: string; x: number; y: number } | null>(null);
   const [edge, setEdge] = useState<{ source: string; target: string } | null>(null);
   const [suggest, setSuggest] = useState<Suggestion[] | null>(null);
   const [suggesting, setSuggesting] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const pendingLinks = useRef(new Set<string>());
+  const [linkErrors, setLinkErrors] = useState<Record<string, string>>({});
   const [pick, setPick] = useState("");
   const titleOf = (id: string) => data?.nodes.find((n) => n.id === id)?.title || "";
 
   const refreshAfterLink = (ids: string[]) => {
     mutate();
-    globalMutate("/api/notes");
+    globalMutate(isNoteListCacheKey);
     ids.forEach((id) => { globalMutate(`/api/notes/${id}`); globalMutate(`/api/notes/${id}/links`); });
   };
-  const addLink = async (from: string, to: string, quiet = false) => {
+  const addLink = async (from: string, to: string, quiet = false, kind?: RelationKind) => {
+    const key = `${from}:${to}`;
+    if (pendingLinks.current.has(key)) return false;
+    pendingLinks.current.add(key);
     try {
-      const r = await api<{ changed: boolean }>(`/api/notes/${from}/links`, { method: "POST", json: { target_id: to } });
+      const r = await api<{ changed: boolean }>(`/api/notes/${from}/links`, { method: "POST", json: { target_id: to, ...(kind ? { kind } : {}) } });
       if (!quiet) toast(r.changed ? `已连接：${titleOf(from)} → ${titleOf(to)}` : "这两篇已经连着了");
       refreshAfterLink([from, to]);
+      setLinkErrors((errors) => { const next = { ...errors }; delete next[key]; return next; });
+      return true;
     } catch (e) {
-      toast((e as Error).message, "bad");
-    }
+      setLinkErrors((errors) => ({ ...errors, [key]: (e as Error).message }));
+      if (!quiet) toast((e as Error).message, "bad");
+      return false;
+    } finally { pendingLinks.current.delete(key); }
+  };
+  const changeType = async (from: string, to: string, kind: RelationKind) => {
+    if (typeSaving) return;
+    setTypeSaving(true);
+    try {
+      await api(`/api/notes/${from}/links/${to}`, { method: "PATCH", json: { kind } });
+      refreshAfterLink([from, to]);
+      toast("已更新关系类型");
+    } catch (error) { toast((error as Error).message, "bad"); }
+    finally { setTypeSaving(false); }
   };
   const removeLink = async (from: string, to: string) => {
     // 连线可能写在任意一边，先删 from → to，没有就删反方向
@@ -98,8 +137,11 @@ function Graph() {
     setSuggesting(false);
   };
   const acceptSuggestion = async (sg: Suggestion) => {
-    await addLink(sg.source, sg.target, true);
-    setSuggest((xs) => (xs ? xs.filter((x) => x !== sg) : xs));
+    if (connecting) return;
+    setConnecting(true);
+    const ok = await addLink(sg.source, sg.target, true);
+    if (ok) setSuggest((xs) => (xs ? xs.filter((x) => x !== sg) : xs));
+    setConnecting(false);
   };
   const { data: courses } = useSWR<Course[]>("/api/courses", fetcher);
   const courseMap = useMemo(() => Object.fromEntries((courses || []).map((c) => [c.id, c])), [courses]);
@@ -277,7 +319,7 @@ function Graph() {
     if (d.kind === "link") {
       setLinkDrag(null);
       const target = d.moved ? nodeAt(e.clientX, e.clientY) : undefined;
-      if (target && target.id !== d.id) addLink(d.id!, target.id);
+      if (target && target.id !== d.id) addLink(d.id!, target.id, false, newKind);
       else if (!d.moved) { setSelected(d.id!); setEdge(null); }
       return;
     }
@@ -308,14 +350,19 @@ function Graph() {
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-3 h-14 px-6 border-b border-rule shrink-0">
         <Network size={17} className="text-accent" />
-        <h1 className="text-[16px] font-semibold">知识图谱</h1>
+        <h1 className="text-[16px] font-semibold">知识图谱{data?.center_id ? " · 局部" : " · 全图"}</h1>
         {data && (
           <span className="text-[12.5px] text-muted">
             {data.nodes.length} 篇笔记 · {data.edges.length} 条链接
-            {data.unresolved > 0 && <span className="text-faint"> · {data.unresolved} 个链接指向还没建的笔记</span>}
+            {data.unresolved > 0 && <span className="text-faint"> · {data.unresolved} 个链接尚未解析{data.ambiguous > 0 ? `（${data.ambiguous} 个同名目标需到笔记中选择）` : ""}</span>}
           </span>
         )}
         <span className="flex-1" />
+        <label className="flex items-center gap-2 text-[12px] text-muted" title={relationDescriptions[newKind]}>新连线类型
+          <select aria-label="新连线关系类型" className="input h-7 w-28 text-[12px]" value={newKind} onChange={(event) => setNewKind(event.target.value as RelationKind)}>
+            {Object.entries(relationLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+          </select>
+        </label>
         <div className="relative w-52">
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
           <input className="input h-8 pl-7 text-[13px]" placeholder="找一篇笔记" value={query}
@@ -342,6 +389,21 @@ function Graph() {
         </label>
       </div>
 
+      <div className="flex items-center gap-3 px-6 py-2 border-b border-rule text-[12.5px] flex-wrap">
+        {data?.center_id && <span className="text-muted">{`以「${noteIndex?.find((note) => note.id === data.center_id)?.title || "所选笔记"}」为中心 ${data.depth} 层，显示 ${data.nodes.length} / ${data.total_nodes} 篇；连线保留原方向。`}</span>}
+        {data?.center_id && <><button className="btn h-7" disabled={data.depth === 1} onClick={() => setRange(data.center_id!, 1)}>一层</button><button className="btn h-7" disabled={data.depth === 2} onClick={() => setRange(data.center_id!, 2)}>两层</button><button className="btn h-7" onClick={() => setRange(null)}>查看全图</button></>}
+        <span className="flex-1" />
+        <label className="flex items-center gap-2">局部中心
+          <input className="input h-7 w-40 text-[12px]" placeholder="筛选全部笔记" value={centerQuery} onChange={(event) => setCenterQuery(event.target.value)} />
+          <select className="input h-7 max-w-52 text-[12px]" aria-label="选择局部图中心" value={data?.center_id || ""} onChange={(event) => { if (event.target.value) setRange(event.target.value); }}>
+            <option value="">选择笔记…</option>
+            {(noteIndex || []).filter((note) => (!course || note.course_id === course) && (!centerQuery || note.title.toLowerCase().includes(centerQuery.toLowerCase()))).map((note) => <option key={note.id} value={note.id}>{note.title} · {note.id.slice(0, 8)}</option>)}
+          </select>
+        </label>
+        {graphLoading && <span className="text-muted">正在载入图谱…</span>}
+        {graphError && <span role="alert" className="text-warn">{(graphError as Error).message} <button className="underline" onClick={() => setRange(null)}>返回全图</button></span>}
+      </div>
+
       <div className="flex items-center gap-1.5 px-6 py-2 border-b border-rule shrink-0 overflow-x-auto">
         <button onClick={() => setCourse(null)} className="chip hover:text-ink shrink-0"
           style={!course ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}>全部学科</button>
@@ -359,20 +421,29 @@ function Graph() {
           <svg ref={svgRef} width={size.w} height={size.h} className="block touch-none select-none"
             style={{ cursor: linking ? "crosshair" : drag.current?.kind === "pan" ? "grabbing" : "grab" }}
             onPointerDown={(e) => onPointerDown(e)} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+            <defs>{[["relation-arrow", "var(--muted)"], ["relation-arrow-accent", "var(--accent)"], ["relation-arrow-selected", "var(--bad)"]].map(([id, color]) => (
+              <marker key={id} id={id} viewBox="0 0 10 10" refX="5" refY="5" markerWidth={9 / Math.max(view.k, 0.6)} markerHeight={9 / Math.max(view.k, 0.6)} orient="auto" markerUnits="userSpaceOnUse">
+                <path d="M 2 1 L 8 5 L 2 9" fill="none" stroke={color} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" strokeDasharray="none" />
+              </marker>
+            ))}</defs>
             <g transform={`translate(${size.w / 2 + view.x},${size.h / 2 + view.y}) scale(${view.k})`}>
               {ls.map((l) => {
                 const s = l.source as SimNode;
                 const t = l.target as SimNode;
-                if (s.x === undefined || t.x === undefined) return null;
+                if (s.x === undefined || s.y === undefined || t.x === undefined || t.y === undefined) return null;
+                const line = directedLine({ x: s.x, y: s.y, r: s.r }, { x: t.x, y: t.y, r: t.r });
+                if (!line) return null;
                 const on = (focus || q) ? lit(idOf(s)) && lit(idOf(t)) && (q ? true : idOf(s) === focus || idOf(t) === focus) : true;
                 const picked = edge && edge.source === idOf(s) && edge.target === idOf(t);
+                const highlighted = on && !!(focus || q);
                 return (
                   <g key={`${idOf(s)}-${idOf(t)}`}>
-                    <line x1={s.x} y1={s.y} x2={t.x} y2={t.y}
-                      stroke={picked ? "var(--bad)" : on && (focus || q) ? "var(--accent)" : "var(--faint)"}
-                      strokeOpacity={picked ? 1 : on ? (focus ? 0.8 : 0.45) : 0.08}
+                    <path d={line.d} fill="none" markerMid={`url(#${picked ? "relation-arrow-selected" : highlighted ? "relation-arrow-accent" : "relation-arrow"})`}
+                      stroke={picked ? "var(--bad)" : highlighted ? "var(--accent)" : "var(--faint)"}
+                      opacity={picked ? 1 : on ? (focus ? 0.8 : 0.45) : 0.08}
                       strokeWidth={(picked ? 2.4 : on && focus ? 1.6 : 1) / Math.max(view.k, 0.6)} />
-                    <line x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke="transparent" strokeWidth={12 / view.k} className="cursor-pointer"
+                    <title>{s.title} → {t.title} · {relationLabels[l.kind]}（{relationDescriptions[l.kind]}）</title>
+                    <path d={line.d} fill="none" stroke="transparent" strokeWidth={12 / view.k} pointerEvents="stroke" className="cursor-pointer"
                       onPointerDown={(e) => { e.stopPropagation(); setEdge({ source: idOf(s), target: idOf(t) }); setSelected(null); setSuggest(null); }} />
                   </g>
                 );
@@ -380,13 +451,17 @@ function Graph() {
               {suggest?.map((sg) => {
                 const a = ns.find((n) => n.id === sg.source);
                 const b = ns.find((n) => n.id === sg.target);
-                if (!a || !b || a.x === undefined || b.x === undefined) return null;
-                return <line key={`sg-${sg.source}-${sg.target}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="var(--accent)"
+                if (!a || !b || a.x === undefined || a.y === undefined || b.x === undefined || b.y === undefined) return null;
+                const line = directedLine({ x: a.x, y: a.y, r: a.r }, { x: b.x, y: b.y, r: b.r });
+                if (!line) return null;
+                return <path key={`sg-${sg.source}-${sg.target}`} d={line.d} fill="none" stroke="var(--accent)" markerMid="url(#relation-arrow-accent)"
                   strokeWidth={1.6 / Math.max(view.k, 0.6)} strokeDasharray={`${5 / view.k} ${4 / view.k}`} />;
               })}
               {linkDrag && (() => {
                 const a = ns.find((n) => n.id === linkDrag.from);
-                return a ? <line x1={a.x} y1={a.y} x2={linkDrag.x} y2={linkDrag.y} stroke="var(--accent)" strokeWidth={2 / view.k}
+                if (!a || a.x === undefined || a.y === undefined) return null;
+                const line = directedLine({ x: a.x, y: a.y, r: a.r }, { x: linkDrag.x, y: linkDrag.y, r: 0 });
+                return line ? <path d={line.d} fill="none" stroke="var(--accent)" markerMid="url(#relation-arrow-accent)" strokeWidth={2 / view.k}
                   strokeDasharray={`${6 / view.k} ${4 / view.k}`} /> : null;
               })()}
               {ns.map((n) => {
@@ -461,18 +536,23 @@ function Graph() {
                     onMouseEnter={() => setHovered(sg.source)} onMouseLeave={() => setHovered(null)}>
                     <p className="text-[13.5px] font-medium leading-snug">{sg.source_title} <span className="text-faint">→</span> {sg.target_title}</p>
                     {sg.reason && <p className="text-[12.5px] text-muted mt-1 leading-relaxed">{sg.reason}</p>}
+                    {linkErrors[`${sg.source}:${sg.target}`] && <p role="alert" className="text-[12px] text-warn mt-2">连接失败：{linkErrors[`${sg.source}:${sg.target}`]}，可重试。</p>}
                     <div className="flex gap-1.5 mt-2.5">
-                      <button className="btn btn-primary h-7 text-[12px]" onClick={() => acceptSuggestion(sg)}><Check size={13} />连上</button>
+                      <button className="btn btn-primary h-7 text-[12px]" disabled={connecting} onClick={() => acceptSuggestion(sg)}><Check size={13} />{linkErrors[`${sg.source}:${sg.target}`] ? "重试" : "连上"}</button>
                       <button className="btn h-7 text-[12px] text-muted" onClick={() => setSuggest((xs) => xs && xs.filter((x) => x !== sg))}>忽略</button>
                     </div>
                   </li>
                 ))}
               </ul>
-              <button className="btn btn-outline w-full mt-4" onClick={async () => {
-                for (const sg of suggest) await addLink(sg.source, sg.target, true);
-                toast(`已连上 ${suggest.length} 条`);
-                setSuggest(null);
-              }}>全部连上</button>
+              <button className="btn btn-outline w-full mt-4" disabled={connecting} onClick={async () => {
+                if (connecting) return;
+                setConnecting(true);
+                const result = await connectSuggestions(suggest, (sg) => addLink(sg.source, sg.target, true));
+                const succeeded = new Set(result.successes);
+                setSuggest((items) => items?.filter((item) => !succeeded.has(item)) || null);
+                toast(`成功 ${result.successes.length} 条，失败 ${result.failures.length} 条${result.failures.length ? "，失败项已保留，可重试" : ""}`, result.failures.length ? "bad" : "ok");
+                setConnecting(false);
+              }}>{connecting ? "正在连接…" : "全部连上"}</button>
             </div>
           </aside>
         )}
@@ -485,9 +565,16 @@ function Graph() {
               </div>
               <p className="mt-3 text-[14px] leading-relaxed">
                 <Link href={`/notes?id=${edge.source}`} className="font-medium hover:text-accent">{titleOf(edge.source)}</Link>
-                <span className="text-faint"> 里链接了 </span>
+                <span className="text-faint"> → </span>
                 <Link href={`/notes?id=${edge.target}`} className="font-medium hover:text-accent">{titleOf(edge.target)}</Link>
               </p>
+              <label className="block text-[12px] text-muted mt-4">关系类型
+                <select aria-label="修改关系类型" className="input mt-2" disabled={typeSaving} value={data?.edges.find((item) => item.source === edge.source && item.target === edge.target)?.kind || "related"}
+                  onChange={(event) => changeType(edge.source, edge.target, event.target.value as RelationKind)}>
+                  {Object.entries(relationLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+                </select>
+              </label>
+              <p className="text-[12px] text-muted mt-2">{relationDescriptions[data?.edges.find((item) => item.source === edge.source && item.target === edge.target)?.kind || "related"]}。A 为箭头起点，B 为箭头终点。</p>
               <button className="btn btn-outline w-full mt-5 text-bad" onClick={() => removeLink(edge.source, edge.target)}>
                 <Trash2 size={14} />删除这条连线
               </button>
@@ -509,6 +596,7 @@ function Graph() {
               </p>
               {sel.excerpt && <p className="mt-4 text-[13.5px] leading-relaxed text-muted">{sel.excerpt}</p>}
               <Link href={`/notes?id=${sel.id}`} className="btn btn-primary w-full mt-5"><ArrowUpRight size={14} />打开笔记</Link>
+              <button className="btn btn-outline w-full mt-2" onClick={() => setRange(sel.id)}>以此笔记查看局部图</button>
               <h3 className="section-title mt-7 mb-2">连到另一篇笔记</h3>
               <input className="input h-8 text-[13px]" placeholder="输入标题筛选" value={pick} onChange={(e) => setPick(e.target.value)} />
               {pick.trim() && (
@@ -517,7 +605,7 @@ function Graph() {
                     && n.title.toLowerCase().includes(pick.trim().toLowerCase())).slice(0, 6).map((n) => (
                     <li key={n.id}>
                       <button className="w-full flex items-center gap-2 h-8 px-2 -mx-2 rounded-lg text-[13px] text-left row-hover"
-                        onClick={() => { addLink(sel.id, n.id); setPick(""); }}>
+                        onClick={async () => { if (await addLink(sel.id, n.id, false, newKind)) setPick(""); }}>
                         <Plus size={13} className="text-accent" /><span className="flex-1 truncate">{n.title}</span>
                       </button>
                     </li>

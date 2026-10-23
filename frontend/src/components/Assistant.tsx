@@ -38,7 +38,7 @@ export function AssistantPanel({ open, onClose }: { open: boolean; onClose: () =
   const box = useRef<HTMLTextAreaElement>(null);
   const askConsent = useAiConsent();
   const { data: status } = useSWR<{ configured: boolean; config: { model: string } | null }>(open ? "/api/ai/status" : null, fetcher);
-  const { data: notes } = useSWR<NoteSummary[]>(open ? "/api/notes" : null, fetcher);
+  const { data: notes } = useSWR<Pick<NoteSummary, "id" | "title" | "course_id">[]>(open ? "/api/notes/index" : null, fetcher);
   const known = useMemo(() => new Set((notes || []).map((n) => n.title.trim().toLowerCase())), [notes]);
 
   useEffect(() => {

@@ -1,0 +1,111 @@
+{
+  "dataset": {
+    "notes": 5000,
+    "cards": 10000,
+    "materials": 1000,
+    "material_units": 10000,
+    "links": 10000,
+    "note_content_characters": 12850000
+  },
+  "environment": {
+    "python": "3.13.15",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "sqlite": "3.50.4",
+    "app_version": "0.3.2"
+  },
+  "warm_rounds": 20,
+  "method": "TestClient wall time includes routing, SQLite connection/query, response serialization and middleware. First request is not an OS-cold-cache measurement. OS caches are uncontrolled; all data and source files are synthetic and temporary.",
+  "measurements": {
+    "search_common": {
+      "path": "/api/search?q=common&limit=30",
+      "first_ms": 324.57,
+      "warm_median_ms": 325.978,
+      "warm_p95_ms": 1244.306,
+      "payload_bytes": 11632,
+      "returned_items": 30,
+      "warm_samples_ms": [
+        288.48,
+        294.713,
+        289.641,
+        280.183,
+        286.151,
+        289.427,
+        285.699,
+        293.419,
+        316.105,
+        333.515,
+        346.357,
+        318.441,
+        498.696,
+        831.751,
+        965.151,
+        1244.306,
+        1373.771,
+        1093.973,
+        1189.326,
+        848.534
+      ]
+    },
+    "search_selective": {
+      "path": "/api/search?q=needle0042&limit=30",
+      "first_ms": 356.393,
+      "warm_median_ms": 527.025,
+      "warm_p95_ms": 749.691,
+      "payload_bytes": 10333,
+      "returned_items": 30,
+      "warm_samples_ms": [
+        374.499,
+        498.794,
+        347.278,
+        370.811,
+        749.691,
+        669.206,
+        533.165,
+        604.262,
+        439.033,
+        520.885,
+        631.583,
+        353.205,
+        513.077,
+        735.997,
+        757.786,
+        468.893,
+        567.761,
+        647.874,
+        537.415,
+        496.613
+      ]
+    },
+    "search_multiple": {
+      "path": "/api/search?q=common%20retention&limit=30",
+      "first_ms": 1111.649,
+      "warm_median_ms": 1362.828,
+      "warm_p95_ms": 1616.738,
+      "payload_bytes": 11722,
+      "returned_items": 30,
+      "warm_samples_ms": [
+        1186.583,
+        1055.025,
+        1172.442,
+        1312.209,
+        1232.412,
+        1382.14,
+        1332.003,
+        1373.954,
+        1400.753,
+        1565.184,
+        1616.738,
+        1449.979,
+        1408.814,
+        1505.97,
+        1327.55,
+        1351.701,
+        1243.481,
+        1719.822,
+        1260.932,
+        1431.34
+      ]
+    }
+  },
+  "search_profile": "         193115 function calls in 1.514 seconds\n\n   Ordered by: cumulative time\n   List reduced from 28 to 20 due to restriction <20>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.932    0.932    1.513    1.513 D:\\软件工程\\软件项目\\KnowFlow\\backend\\app\\logic\\search.py:74(search)\n    25000    0.076    0.000    0.529    0.000 D:\\软件工程\\软件项目\\KnowFlow\\backend\\app\\logic\\search.py:63(_score)\n    75120    0.414    0.000    0.414    0.000 {method 'lower' of 'str' objects}\n    16000    0.027    0.000    0.031    0.000 D:\\软件工程\\软件项目\\KnowFlow\\backend\\app\\logic\\search.py:82(offer)\n    25000    0.031    0.000    0.031    0.000 {method 'count' of 'str' objects}\n    10000    0.011    0.000    0.011    0.000 {method 'get' of 'dict' objects}\n    25030    0.009    0.000    0.009    0.000 {built-in method builtins.min}\n        3    0.008    0.003    0.008    0.003 {method 'execute' of 'sqlite3.Connection' objects}\n    16303    0.004    0.000    0.004    0.000 {built-in method builtins.len}\n       30    0.001    0.000    0.001    0.000 D:\\软件工程\\软件项目\\KnowFlow\\backend\\app\\logic\\search.py:35(snippet)\n        1    0.000    0.000    0.000    0.000 D:\\软件工程\\软件项目\\KnowFlow\\backend\\app\\logic\\search.py:20(_terms)\n      198    0.000    0.000    0.000    0.000 {built-in method _heapq.heapreplace}\n       31    0.000    0.000    0.000    0.000 {method 'split' of 'str' objects}\n       36    0.000    0.000    0.000    0.000 {method 'join' of 'str' objects}\n        3    0.000    0.000    0.000    0.000 D:\\软件工程\\软件项目\\KnowFlow\\backend\\app\\logic\\search.py:24(_like_clause)\n      120    0.000    0.000    0.000    0.000 {method 'find' of 'str' objects}\n        1    0.000    0.000    0.000    0.000 {method 'disable' of '_lsprof.Profiler' objects}\n       60    0.000    0.000    0.000    0.000 {method 'pop' of 'dict' objects}\n        1    0.000    0.000    0.000    0.000 {built-in method builtins.sorted}\n       63    0.000    0.000    0.000    0.000 {method 'append' of 'list' objects}\n\n\n"
+}

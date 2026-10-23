@@ -3,11 +3,13 @@
 import { Check, Pencil, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
 import { api, ApiError, Card, Course, fetcher } from "@/lib/api";
 import { colorOf, intervalLabel } from "@/lib/format";
+import { refreshReviewQueue, ReviewSubmission } from "@/lib/submission";
 import { Markdown } from "@/components/Markdown";
+import { WeakStudySheet } from "@/components/WeakStudySheet";
 import { Dot, Empty, Modal, PageHeader, useConfirm, useToast } from "@/components/ui";
 
 export default function ReviewPage() {
@@ -35,7 +37,7 @@ function Review() {
           <button data-on={tab === "review"} onClick={() => setTab("review")}>今日复习</button>
           <button data-on={tab === "cards"} onClick={() => setTab("cards")}>卡片库</button>
         </div>} />
-      {tab === "review" ? <Session courseId={params.get("course")} /> : <Library noteId={params.get("note")} />}
+      {tab === "review" ? <Session key={params.get("course") || "all"} courseId={params.get("course")} /> : <Library noteId={params.get("note")} weakQuery={params.get("weak") === "1"} learnId={params.get("learn")} />}
     </div>
   );
 }
@@ -50,6 +52,9 @@ function Session({ courseId }: { courseId: string | null }) {
   const [flipped, setFlipped] = useState(false);
   const [done, setDone] = useState(0);
   const [editing, setEditing] = useState<Card | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const submission = useRef(new ReviewSubmission(() => typeof window === "undefined" ? null : localStorage));
   const toast = useToast();
 
   useEffect(() => {
@@ -58,22 +63,26 @@ function Session({ courseId }: { courseId: string | null }) {
 
   const card = queue?.[index];
   const grade = useCallback(async (g: "forgot" | "hard" | "good") => {
-    if (!card || !flipped) return;
+    if (!card || !flipped || submission.current.busy || conflict) return;
+    setSubmitting(true);
     try {
-      await api(`/api/review/${card.id}`, { method: "POST", json: { grade: g } });
+      const advanced = await submission.current.submit(card, g, (request) =>
+        api(`/api/review/${card.id}`, { method: "POST", json: request }));
+      if (!advanced) return;
       setDone((d) => d + 1);
       setFlipped(false);
       setIndex((i) => i + 1);
       globalMutate("/api/courses");
       globalMutate("/api/stats?days=365");
     } catch (e) {
+      if ((e as ApiError).code === "REVIEW_CONFLICT") setConflict(true);
       toast((e as ApiError).message, "bad");
-    }
-  }, [card, flipped, toast]);
+    } finally { setSubmitting(false); }
+  }, [card, flipped, toast, conflict]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (editing || (e.target as HTMLElement).tagName.match(/INPUT|TEXTAREA|SELECT/)) return;
+      if (e.repeat || submitting || editing || (e.target as HTMLElement).tagName.match(/INPUT|TEXTAREA|SELECT/)) return;
       if (e.key === " ") { e.preventDefault(); setFlipped((f) => !f); }
       if (flipped && e.key === "1") grade("forgot");
       if (flipped && e.key === "2") grade("hard");
@@ -81,7 +90,7 @@ function Session({ courseId }: { courseId: string | null }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flipped, grade, editing]);
+  }, [flipped, grade, editing, submitting]);
 
   if (!data || queue === null) return null;
   const total = queue.length;
@@ -98,7 +107,12 @@ function Session({ courseId }: { courseId: string | null }) {
             </p>
             <div className="flex justify-center gap-2 mt-6">
               <Link href="/" className="btn btn-outline">回到今天</Link>
-              {done > 0 && <button className="btn" onClick={() => { setQueue(null); setIndex(0); setDone(0); mutate(); }}>再看一遍还有没有</button>}
+              {done > 0 && <button className="btn" disabled={submitting} onClick={async () => {
+                setSubmitting(true);
+                try { await refreshReviewQueue(() => mutate(), (fresh) => { setQueue(fresh.items); setIndex(0); setDone(0); setFlipped(false); }); }
+                catch (error) { toast((error as Error).message, "bad"); }
+                finally { setSubmitting(false); }
+              }}>{submitting ? "更新队列中…" : "再看一遍还有没有"}</button>}
             </div>
           </div>
         </div>
@@ -107,6 +121,7 @@ function Session({ courseId }: { courseId: string | null }) {
   }
 
   const color = colorOf(card.course_color);
+  const pendingGrade = submission.current.pendingFor(card)?.grade;
   return (
     <div className="flex flex-col items-center">
       <div className="w-full max-w-[560px] mb-6">
@@ -142,20 +157,30 @@ function Session({ courseId }: { courseId: string | null }) {
       <div className={`grid grid-cols-3 gap-3 w-full max-w-[560px] mt-8 transition-opacity ${flipped ? "" : "opacity-30 pointer-events-none"}`}>
         {([["forgot", "忘记", "1", "var(--bad)"], ["hard", "模糊", "2", "var(--warn)"], ["good", "记得", "3", "var(--accent)"]] as const).map(([g, label, k, c]) => (
           <button key={g} onClick={() => grade(g)} className="h-16 rounded-xl border border-rule hover:border-current transition-colors flex flex-col items-center justify-center"
-            style={{ color: c }}>
-            <span className="text-[15px] font-semibold">{label}</span>
+            disabled={submitting || conflict || (!!pendingGrade && pendingGrade !== g)} style={{ color: c }}>
+            <span className="text-[15px] font-semibold">{pendingGrade === g ? `重试：${label}` : label}</span>
             <span className="text-[11.5px] text-muted mt-0.5">{card.preview && intervalLabel(card.preview[g])}后再见 <kbd className="ml-1 px-1 rounded border border-rule text-[10px] text-faint font-sans">{k}</kbd></span>
           </button>
         ))}
       </div>
+      <p role="status" className="mt-3 text-[12px] text-muted">
+        {submitting ? "正在提交评分…" : conflict ? "这张卡片已在其他窗口评分。" : pendingGrade ? "上次评分尚未确认，重试会提交原评分。" : ""}
+        {conflict && <button className="ml-2 text-accent" onClick={async () => {
+          const next = await mutate();
+          if (next) { submission.current.clear(card); setQueue(next.items); setIndex(0); setFlipped(false); setConflict(false); }
+        }}>更新复习队列</button>}
+      </p>
       <CardEditor card={editing} onClose={() => setEditing(null)} onSaved={(c) => setQueue((q) => q!.map((x) => (x.id === c.id ? { ...x, ...c } : x)))} />
     </div>
   );
 }
 
-function Library({ noteId }: { noteId: string | null }) {
+function Library({ noteId, weakQuery, learnId }: { noteId: string | null; weakQuery: boolean; learnId: string | null }) {
   const [course, setCourse] = useState("");
-  const [weak, setWeak] = useState(false);
+  const [weak, setWeak] = useState(weakQuery);
+  const [learning, setLearning] = useState<string | null>(learnId);
+  useEffect(() => setWeak(weakQuery), [weakQuery]);
+  useEffect(() => setLearning(learnId), [learnId]);
   const qs = new URLSearchParams();
   if (course) qs.set("course_id", course);
   if (weak) qs.set("weak", "true");
@@ -201,7 +226,8 @@ function Library({ noteId }: { noteId: string | null }) {
               <p>{c.due}</p>
               <p className="text-faint">间隔 {c.interval} 天，EF {c.ef.toFixed(2)}{c.forgot_count ? `，忘记 ${c.forgot_count} 次` : ""}</p>
             </div>
-            <div className="flex opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex items-center">
+              {c.forgot_count >= 3 && <button className="btn text-accent" onClick={() => setLearning(c.id)}>补强学习</button>}
               <button className="btn btn-icon text-muted" onClick={() => setEditing(c)} aria-label="编辑"><Pencil size={14} /></button>
               <button className="btn btn-icon text-muted" onClick={() => remove(c)} aria-label="删除"><Trash2 size={14} /></button>
             </div>
@@ -212,6 +238,15 @@ function Library({ noteId }: { noteId: string | null }) {
       <CardEditor card={editing} onClose={() => setEditing(null)} onSaved={() => mutate()} />
       <CardEditor card={creating ? ({} as Card) : null} courses={courses} onClose={() => setCreating(false)}
         onSaved={() => { mutate(); globalMutate("/api/courses"); }} />
+      {learning && <WeakStudySheet key={learning} cardId={learning} onSaved={() => { mutate(); globalMutate("/api/courses"); }}
+        onClose={() => {
+          setLearning(null);
+          if (learnId) {
+            const query = new URLSearchParams(window.location.search);
+            query.delete("learn");
+            router.replace(`/review?${query.toString()}`);
+          }
+        }} />}
     </div>
   );
 }

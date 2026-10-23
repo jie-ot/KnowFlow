@@ -81,12 +81,13 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
     setIndex(0);
   }, []);
 
-  const pick = (title: string) => {
+  const pick = (choice: TitleOption | string) => {
     const t = el.current;
     if (!t || !ac) return;
     const after = t.value.slice(t.selectionStart);
     const close = after.startsWith("]]") ? "" : "]]";
-    replaceRange(t, ac.start, t.selectionStart, title + close);
+    const target = typeof choice === "string" ? choice : `id:${choice.id}|${choice.title.replace(/[\[\]|\r\n]/g, " ").trim()}`;
+    replaceRange(t, ac.start, t.selectionStart, target + close);
     if (!close) t.setSelectionRange(t.selectionStart + 2, t.selectionStart + 2);
     setAc(null);
   };
@@ -110,7 +111,7 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
       if (e.key === "Escape") { e.preventDefault(); setAc(null); return; }
       if ((e.key === "Enter" || e.key === "Tab") && total > 0) {
         e.preventDefault();
-        pick(index < matches.length ? matches[index].title : ac.query.trim());
+        pick(index < matches.length ? matches[index] : ac.query.trim());
         return;
       }
     }
@@ -190,7 +191,7 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
           style={{ left: Math.min(ac.x, window.innerWidth - 300), top: Math.max(8, menuTop) }}>
           <p className="px-2.5 pt-1.5 pb-1 text-[11px] text-faint">链接到笔记</p>
           {matches.map((m, i) => (
-            <button key={m.id} onMouseDown={(e) => { e.preventDefault(); pick(m.title); }} onMouseEnter={() => setIndex(i)}
+            <button key={m.id} onMouseDown={(e) => { e.preventDefault(); pick(m); }} onMouseEnter={() => setIndex(i)}
               className={`w-full flex items-center gap-2 h-8 px-2.5 rounded-lg text-[13px] text-left ${i === index ? "bg-hover" : ""}`}>
               <Link2 size={13} className="text-faint shrink-0" />
               <span className="truncate">{m.title}</span>

@@ -22,10 +22,12 @@ def test_backlinks_rename_graph_calendar(client):  # noqa: F811
 
     renamed = client.patch(f"/api/notes/{b['id']}", json={"base_version": b["version"], "title": "乙2"}).json()
     assert renamed["renamed_links"] == 1
-    assert "[[乙2]]" in client.get(f"/api/notes/{a['id']}").json()["content"]
+    rewritten = client.get(f"/api/notes/{a['id']}").json()["content"]
+    assert f"[[id:{b['id']}|乙2]]" in rewritten
+    assert client.get(f"/api/notes/{a['id']}/links").json()["outgoing"][0]["note_id"] == b["id"]
 
     graph = client.get("/api/graph").json()
-    assert {"source": a["id"], "target": b["id"]} in graph["edges"]
+    assert {"source": a["id"], "target": b["id"], "kind": "related"} in graph["edges"]
     assert len(graph["edges"]) >= 3  # 示例笔记之间也有双链
 
     cal = client.get("/api/calendar", params={"start": "2000-01-01", "end": "2100-01-01"}).json()
@@ -56,9 +58,9 @@ def test_link_endpoints(client):
     a, b = notes["泰勒公式"], notes["进程调度算法"]
     assert client.post(f"/api/notes/{a}/links", json={"target_id": b}).json()["changed"]
     edges = client.get("/api/graph").json()["edges"]
-    assert {"source": a, "target": b} in edges
+    assert {"source": a, "target": b, "kind": "related"} in edges
     assert client.delete(f"/api/notes/{a}/links/{b}").json()["removed"] == 1
-    assert {"source": a, "target": b} not in client.get("/api/graph").json()["edges"]
+    assert not any(edge["source"] == a and edge["target"] == b for edge in client.get("/api/graph").json()["edges"])
 
 
 def test_clearing_content_keeps_revision(client):

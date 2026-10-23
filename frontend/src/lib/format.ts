@@ -58,6 +58,8 @@ export const sizeLabel = (b: number) =>
 export const TASK_KINDS: Record<string, string> = { learn: "学习", review: "复习", practice: "练习", read: "阅读" };
 
 export const REVISION_REASON: Record<string, string> = {
+  before_link_edit: "图谱连线修改前",
+  before_understanding: "补充理解前",
   before_ai_organize: "AI 整理前",
   before_ai_summary: "加入 AI 摘要前",
   before_restore: "恢复旧版本前",

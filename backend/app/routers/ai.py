@@ -12,7 +12,7 @@ import asyncio
 import json
 import sqlite3
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..db import connect, dumps, get_db, get_settings, new_id, now_iso, row_to_dict, set_setting
+from ..db import connect, dumps, get_db, get_settings, new_id, now_iso, set_setting
 from ..errors import AppError, not_found
 from ..llm import gateway, prompts
 from ..llm.gateway import LLMError, ModelConfig
@@ -28,9 +28,14 @@ from ..logic.facts import check_preserve, check_summary
 from ..logic.plan_rules import TASK_KINDS, validate_tasks
 from ..logic.text import char_count, estimate_tokens, plain_excerpt
 from ..logic.timeutil import parse_day, today_str
-from ..repo import config_public, get_course, get_note_row, note_detail
-from .notes import save_revision
-from .plans import get_plan_row, plan_tasks, task_out
+from ..repo import config_public, get_course, get_note_row
+from ..services.coordination import assert_generation, current_generation
+from ..services.drafts import (
+    AcceptIn, AcceptTaskIn, accept_draft as accept_draft_service,
+    discard_draft as discard_draft_service, draft_out,
+    finish_draft as _finish_draft, get_draft as _get_draft, outline_content, start_draft,
+)
+from ..services.plans import get_plan_row, plan_tasks
 
 router = APIRouter(prefix="/api", tags=["AI"])
 
@@ -229,7 +234,7 @@ def write_settings(body: SettingsPatch, conn: sqlite3.Connection = Depends(get_d
 # ---------------------------------------------------------------- 任务执行
 
 class RunIn(BaseModel):
-    kind: Literal["organize", "summarize", "extract", "compose", "plan"]
+    kind: Literal["organize", "summarize", "extract", "compose", "plan", "outline"]
     note_id: str | None = None
     length: Literal[100, 300] = 100
     count: int = Field(default=10, ge=5, le=20)
@@ -352,6 +357,32 @@ def _prepare(conn: sqlite3.Connection, body: RunIn, cfg: ModelConfig, limit: int
                       {"role": "user", "content": prompts.compose_user(body.instruction, blocks)}],
         )
 
+    if body.kind == "outline":
+        ids = body.scope_note_ids
+        if not 2 <= len(ids) <= 30 or len(ids) != len(set(ids)):
+            raise AppError(422, "VALIDATION", "请选择 2–30 篇不同的笔记", field="scope_note_ids")
+        sources, blocks = [], []
+        aliases: dict[str, dict[str, Any]] = {}
+        for i, note_id in enumerate(ids, start=1):
+            note = get_note_row(conn, note_id)
+            if not (note["content"] or "").strip():
+                raise AppError(422, "EMPTY_INPUT", f"来源「{note['title']}」没有正文，请补充后再生成")
+            source = {"id": note["id"], "title": note["title"], "version": note["version"],
+                      "course_id": note["course_id"]}
+            sources.append(source)
+            aliases[f"N{i}"] = source
+            blocks.append(f"[N{i}] {note['title']}\n{note['content']}")
+        joined = "\n\n".join(blocks)
+        chars = char_count(joined)
+        _check_length(chars, limit, joined)
+        return TaskSpec(kind="outline", stream=False, max_tokens=min(cfg.max_output_tokens, 8192),
+                        input_chars=chars, course_id=sources[0]["course_id"],
+                        params={"scope_note_ids": ids, "source_notes": sources, "instruction": body.instruction},
+                        context={"aliases": aliases, "sources": sources}, messages=[
+                            {"role": "system", "content": prompts.OUTLINE_SYSTEM},
+                            {"role": "user", "content": prompts.outline_user(body.instruction, blocks)},
+                        ])
+
     # plan
     if not body.plan_id:
         raise AppError(422, "VALIDATION", "缺少计划", field="plan_id")
@@ -390,7 +421,26 @@ COMPOSE_LIMIT_FACTOR = 4
 COMPOSE_BATCH_UNITS = 10
 
 
-async def _compose_batches(cfg: ModelConfig, spec: TaskSpec, settings: dict[str, Any]) -> AsyncIterator[tuple[str, Any]]:
+def _list_field(data: dict[str, Any], key: str, *, required: bool = False) -> list[Any]:
+    value = data.get(key)
+    if value is None and not required:
+        return []
+    if not isinstance(value, list):
+        raise LLMError("STRUCTURE", f"模型字段 {key} 应为数组")
+    return value
+
+
+def _text_field(data: dict[str, Any], key: str, default: str = "") -> str:
+    value = data.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise LLMError("STRUCTURE", f"模型字段 {key} 应为文字")
+    return value.strip()
+
+
+async def _compose_batches(cfg: ModelConfig, spec: TaskSpec, settings: dict[str, Any],
+                           check_running: Callable[[], None] | None = None) -> AsyncIterator[tuple[str, Any]]:
     """分批整理资料。产出 ("progress", {...}) 若干次，最后产出 ("result", (result, warnings, raw))。
 
     某一批输出被截断时，把这一批对半拆开重来；解析失败时这一批自动重试一次。
@@ -402,6 +452,8 @@ async def _compose_batches(cfg: ModelConfig, spec: TaskSpec, settings: dict[str,
     sections: list[Any] = []
     title = ""
     while queue:
+        if check_running is not None:
+            check_running()
         batch = queue.pop(0)
         step = done + 1
         expected = int(sum(char_count(ctx["blocks"][a]) for a in batch) * 1.1) + 200
@@ -412,6 +464,8 @@ async def _compose_batches(cfg: ModelConfig, spec: TaskSpec, settings: dict[str,
                                                                      step, total)}]
         split = False
         for attempt in range(2):
+            if check_running is not None:
+                check_running()
             parts: list[str] = []
             finish = None
             ticks = 0
@@ -419,15 +473,20 @@ async def _compose_batches(cfg: ModelConfig, spec: TaskSpec, settings: dict[str,
                 cfg, messages, max_tokens=spec.max_tokens, temperature=float(settings["temperature"]),
                 idle_timeout=float(settings["idle_timeout_s"]), total_timeout=float(settings["total_timeout_s"]),
                 json_mode=cfg.json_mode,
+                before_request=check_running,
             ):
                 if kind == "delta":
                     parts.append(value)
                     ticks += 1
                     if ticks % 25 == 0:
+                        if check_running is not None:
+                            check_running()
                         yield "progress", {"step": step, "total": total, "label": label, "done": done,
                                            "chars": sum(len(x) for x in parts), "expected": expected}
                 elif kind == "finish":
                     finish = value
+            if check_running is not None:
+                check_running()
             text = "".join(parts)
             if finish == "length":
                 if len(batch) > 1:
@@ -436,19 +495,20 @@ async def _compose_batches(cfg: ModelConfig, spec: TaskSpec, settings: dict[str,
                     total += 1
                     split = True
                     break
-                raise LLMError("PARSE", "单个片段的内容太长，模型输出被截断；可以把这个片段的文字拆短后再试",
+                raise LLMError("TRUNCATED", "单个片段的内容太长，模型输出被截断；可以把这个片段的文字拆短后再试",
                                detail=text[-500:])
             try:
                 data = gateway.parse_json_object(text)
-                got = data.get("sections")
-                if not isinstance(got, list) or not got:
-                    raise LLMError("PARSE")
-            except LLMError:
+                # Validate each batch before accepting it so a malformed batch can
+                # be retried without rerunning all previously completed batches.
+                _parse_compose(data, {a: ctx["aliases"][a] for a in batch})
+                got = data["sections"]
+            except LLMError as exc:
                 if attempt == 1:
-                    raise LLMError("PARSE", f"第 {step} 部分的返回格式不正确，可以重试", detail=text[:2000]) from None
+                    raise LLMError(exc.kind, f"第 {step} 部分：{exc.message}", detail=text[:2000]) from None
                 continue
             sections.extend(got)
-            title = title or str(data.get("title") or "")
+            title = title or _text_field(data, "title")
             break
         if not split:
             done += 1
@@ -459,22 +519,20 @@ async def _compose_batches(cfg: ModelConfig, spec: TaskSpec, settings: dict[str,
 
 
 def _parse_extract(data: dict[str, Any], count: int) -> tuple[dict[str, Any], list[str]]:
-    items_raw = data.get("items")
-    if not isinstance(items_raw, list):
-        raise LLMError("PARSE")
+    items_raw = _list_field(data, "items", required=True)
     items, dropped = [], 0
     for item in items_raw:
         if not isinstance(item, dict):
             dropped += 1
             continue
-        front = str(item.get("front") or "").strip()
-        back = str(item.get("back") or "").strip()
+        front = _text_field(item, "front")
+        back = _text_field(item, "back")
         if not (1 <= len(front) <= 200 and 1 <= len(back) <= 2000):
             dropped += 1
             continue
         items.append({"front": front, "back": back})
     if not items:
-        raise LLMError("PARSE", "模型没有返回可用的知识点")
+        raise LLMError("STRUCTURE", "模型没有返回可用的知识点")
     warnings = []
     if dropped:
         warnings.append(f"有 {dropped} 个知识点格式不合规（为空或超长），已略去")
@@ -486,9 +544,9 @@ def _parse_extract(data: dict[str, Any], count: int) -> tuple[dict[str, Any], li
 
 
 def _parse_compose(data: dict[str, Any], aliases: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
-    sections_raw = data.get("sections")
-    if not isinstance(sections_raw, list) or not sections_raw:
-        raise LLMError("PARSE")
+    sections_raw = _list_field(data, "sections", required=True)
+    if not sections_raw:
+        raise LLMError("STRUCTURE", "模型没有返回笔记小节")
     warnings: list[str] = []
     order: list[str] = []  # 按首次出现给脚注编号
     sections = []
@@ -496,13 +554,15 @@ def _parse_compose(data: dict[str, Any], aliases: dict[str, dict[str, Any]]) -> 
     for sec in sections_raw:
         if not isinstance(sec, dict):
             continue
-        heading = str(sec.get("heading") or "").strip()[:100] or "小节"
-        body_md = str(sec.get("body") or "").strip()
+        heading = _text_field(sec, "heading")[:100] or "小节"
+        body_md = _text_field(sec, "body")
         if not body_md:
             continue
         ids = []
-        for raw in sec.get("source_ids") or []:
-            alias = str(raw).strip().strip("[]")
+        for raw in _list_field(sec, "source_ids"):
+            if not isinstance(raw, str):
+                raise LLMError("STRUCTURE", "模型 source_ids 应为文字数组")
+            alias = raw.strip().strip("[]")
             if alias in aliases:
                 if alias not in ids:
                     ids.append(alias)
@@ -517,7 +577,7 @@ def _parse_compose(data: dict[str, Any], aliases: dict[str, dict[str, Any]]) -> 
                 order.append(alias)
         sections.append({"heading": heading, "body": body_md, "evidence": evidence, "source_ids": ids})
     if not sections:
-        raise LLMError("PARSE", "模型没有返回可用的笔记内容")
+        raise LLMError("STRUCTURE", "模型没有返回可用的笔记内容")
     if invalid_refs:
         warnings.append(f"模型引用了 {invalid_refs} 个不存在的片段编号，已忽略")
     unused = [a for a in aliases if a not in order]
@@ -543,28 +603,59 @@ def _parse_compose(data: dict[str, Any], aliases: dict[str, dict[str, Any]]) -> 
         defs.append(f"[^{ord_}]: [《{info['material_name']}》{info['label']}]"
                     f"(/materials/view?id={info['material_id']}&unit={info['unit_id']})")
     content = "\n\n".join(parts) + ("\n\n" + "\n".join(defs) if defs else "")
-    title = str(data.get("title") or "").strip()[:100] or "资料整理笔记"
+    title = _text_field(data, "title")[:100] or "资料整理笔记"
     return {"title": title, "content": content, "sources": sources, "sections": sections}, warnings
+
+
+def _parse_outline(data: dict[str, Any], ctx: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    title = _text_field(data, "title")
+    raw_sections = _list_field(data, "sections", required=True)
+    if not title or len(title) > 100 or not 1 <= len(raw_sections) <= 40:
+        raise LLMError("STRUCTURE", "提纲需要 1–100 字标题及 1–40 个小节")
+    sections, used = [], set()
+    for raw in raw_sections:
+        if not isinstance(raw, dict):
+            raise LLMError("STRUCTURE", "提纲小节应为对象")
+        heading, body = _text_field(raw, "heading"), _text_field(raw, "body")
+        aliases = _list_field(raw, "source_ids", required=True)
+        if not heading or len(heading) > 100 or not body:
+            raise LLMError("STRUCTURE", "每个提纲小节需要标题及正文")
+        if not aliases or any(not isinstance(alias, str) or alias not in ctx["aliases"] for alias in aliases):
+            raise LLMError("STRUCTURE", "每个提纲小节必须引用已选择的笔记编号，不能引用其他来源")
+        ids = list(dict.fromkeys(ctx["aliases"][alias]["id"] for alias in aliases))
+        used.update(ids)
+        sections.append({"heading": heading, "body": body, "source_note_ids": ids})
+    content = outline_content(sections, ctx["sources"])
+    if len(content) > 200_000:
+        raise LLMError("STRUCTURE", "提纲超过笔记的 200000 字符上限，请减少范围后重试")
+    unused = [source for source in ctx["sources"] if source["id"] not in used]
+    warnings = [f"有 {len(unused)} 篇所选笔记未被提纲小节引用，请核对是否需要补充"] if unused else []
+    return {"title": title, "sections": sections, "content": content, "source_notes": ctx["sources"]}, warnings
 
 
 def _parse_plan(data: dict[str, Any], ctx: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     plan = ctx["plan"]
     result_type = "needs_clarification" if data.get("result_type") == "needs_clarification" else "draft"
-    questions = [str(q).strip() for q in data.get("questions") or [] if str(q).strip()][:5]
-    assumptions = [str(a).strip() for a in data.get("assumptions") or [] if str(a).strip()][:5]
+    questions_raw, assumptions_raw = _list_field(data, "questions"), _list_field(data, "assumptions")
+    if any(not isinstance(value, str) for value in [*questions_raw, *assumptions_raw]):
+        raise LLMError("STRUCTURE", "模型的问题与假设应为文字数组")
+    questions = [q.strip() for q in questions_raw if q.strip()][:5]
+    assumptions = [a.strip() for a in assumptions_raw if a.strip()][:5]
     warnings: list[str] = []
     tasks = []
     has_time = bool(plan["deadline"] or plan["daily_minutes"])
     stripped_dates = 0
-    for raw in data.get("tasks") or []:
+    for raw in _list_field(data, "tasks"):
         if not isinstance(raw, dict):
             continue
-        title = str(raw.get("title") or "").strip()[:200]
+        title = _text_field(raw, "title")[:200]
         if not title:
             continue
-        kind = raw.get("kind") if raw.get("kind") in TASK_KINDS else "learn"
-        due = raw.get("due_date")
-        due = str(due).strip() if due not in (None, "", "null") else None
+        kind_value = _text_field(raw, "kind")
+        kind = kind_value if kind_value in TASK_KINDS else "learn"
+        due = _text_field(raw, "due_date") or None
+        if due == "null":
+            due = None
         if due and parse_day(due) is None:
             due = None
         if due and not has_time:
@@ -573,11 +664,14 @@ def _parse_plan(data: dict[str, Any], ctx: dict[str, Any]) -> tuple[dict[str, An
         minutes = raw.get("estimated_minutes")
         try:
             minutes = int(minutes) if minutes not in (None, "") else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             minutes = None
         if minutes is not None and not 1 <= minutes <= 1440:
             minutes = None
-        note_ids = [ctx["note_aliases"][a] for a in raw.get("note_ids") or [] if a in ctx["note_aliases"]]
+        aliases = _list_field(raw, "note_ids")
+        if any(not isinstance(a, str) for a in aliases):
+            raise LLMError("STRUCTURE", "模型 note_ids 应为文字数组")
+        note_ids = [ctx["note_aliases"][a] for a in aliases if a in ctx["note_aliases"]]
         tasks.append({"title": title, "kind": kind, "due_date": due, "estimated_minutes": minutes,
                       "note_ids": note_ids})
     if stripped_dates:
@@ -586,7 +680,7 @@ def _parse_plan(data: dict[str, Any], ctx: dict[str, Any]) -> tuple[dict[str, An
         if questions:
             result_type = "needs_clarification"
         else:
-            raise LLMError("PARSE", "模型没有返回任务")
+            raise LLMError("STRUCTURE", "模型没有返回任务")
     problems = validate_tasks(tasks, today=ctx["today"], deadline=plan["deadline"],
                               daily_minutes=plan["daily_minutes"], existing=ctx["existing"])
     return {"result_type": result_type, "questions": questions, "assumptions": assumptions,
@@ -595,55 +689,38 @@ def _parse_plan(data: dict[str, Any], ctx: dict[str, Any]) -> tuple[dict[str, An
 
 # ---------- 草稿读写
 
-def draft_out(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any]:
-    data = row_to_dict(row, ("params", "result", "warnings", "usage"))  # type: ignore[arg-type]
-    if data is None:
-        raise not_found("AI 草稿")
-    return data
-
-
-def _get_draft(conn: sqlite3.Connection, draft_id: str) -> dict[str, Any]:
-    return draft_out(conn.execute("SELECT * FROM ai_drafts WHERE id = ?", (draft_id,)).fetchone())
-
-
-def _finish_draft(draft_id: str, **fields: Any) -> dict[str, Any]:
-    conn = connect()
-    try:
-        for key in ("result", "warnings", "usage"):
-            if key in fields and not isinstance(fields[key], str) and fields[key] is not None:
-                fields[key] = dumps(fields[key])
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        with conn:
-            conn.execute(f"UPDATE ai_drafts SET {sets} WHERE id = ?", (*fields.values(), draft_id))
-        return _get_draft(conn, draft_id)
-    finally:
-        conn.close()
-
-
 def _sse(event: str, data: dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
 
 
-async def _call_json(cfg: ModelConfig, spec: TaskSpec, settings: dict[str, Any], parse) -> tuple[dict, list, Any]:  # type: ignore[no-untyped-def]
+async def _call_json(cfg: ModelConfig, spec: TaskSpec, settings: dict[str, Any], parse,
+                     check_running: Callable[[], None] | None = None) -> tuple[dict, list, Any]:  # type: ignore[no-untyped-def]
     """非流式 JSON 任务：解析失败或返回为空时自动重试 1 次（EX-04）。"""
     last_error: LLMError | None = None
     raw_output = ""
     for _attempt in range(2):
-        result = await gateway.chat(
-            cfg, spec.messages, max_tokens=spec.max_tokens, temperature=float(settings["temperature"]),
-            idle_timeout=float(settings["idle_timeout_s"]), total_timeout=float(settings["total_timeout_s"]),
-            json_mode=cfg.json_mode,
-        )
-        raw_output = result.content
+        if check_running is not None:
+            check_running()
         try:
+            result = await gateway.chat(
+                cfg, spec.messages, max_tokens=spec.max_tokens, temperature=float(settings["temperature"]),
+                idle_timeout=float(settings["idle_timeout_s"]), total_timeout=float(settings["total_timeout_s"]),
+                json_mode=cfg.json_mode,
+                before_request=check_running,
+            )
+            if check_running is not None:
+                check_running()
+            raw_output = result.content
+            if result.finish_reason == "length":
+                raise LLMError("TRUNCATED", "输出被截断，可以减少数量或缩小范围后重试")
             if not result.content.strip():
                 raise LLMError("EMPTY")
-            if result.finish_reason == "length":
-                raise LLMError("PARSE", "输出被截断，可以减少数量或缩小范围后重试")
             data = gateway.parse_json_object(result.content)
             parsed, warnings = parse(data)
             return parsed, warnings, (result.usage, raw_output)
         except LLMError as exc:
+            if exc.kind not in {"EMPTY", "JSON", "STRUCTURE", "TRUNCATED", "PARSE"}:
+                raise
             last_error = exc
             continue
     assert last_error is not None
@@ -651,22 +728,40 @@ async def _call_json(cfg: ModelConfig, spec: TaskSpec, settings: dict[str, Any],
     raise last_error
 
 
+class _TaskStopped(Exception):
+    def __init__(self, status: str) -> None:
+        self.status = status
+        self.kind = "CANCELLED" if status == "discarded" else "INTERRUPTED"
+        self.message = "任务已取消，后续请求及结果写入已停止" if status == "discarded" else "任务已中断，请重新执行"
+        super().__init__(self.message)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": self.kind, "message": self.message, "retryable": True}
+
+
+def _ensure_running(draft_id: str, generation: int) -> None:
+    assert_generation(generation)
+    conn = connect()
+    try:
+        row = conn.execute("SELECT status FROM ai_drafts WHERE id = ?", (draft_id,)).fetchone()
+        if row is None or row["status"] != "running":
+            raise _TaskStopped(row["status"] if row is not None else "interrupted")
+    finally:
+        conn.close()
+
+
 @router.post("/ai/run")
 async def run_task(body: RunIn) -> StreamingResponse:
     """执行 AI 任务并以 SSE 返回：start → delta… → done / error。"""
+    generation = current_generation()
     conn = connect()
     try:
         settings = get_settings(conn)
         config_id, cfg, _row = _default_config(conn)
         spec = _prepare(conn, body, cfg, int(settings["max_input_chars"]))
-        draft_id = new_id()
-        with conn:
-            conn.execute(
-                "INSERT INTO ai_drafts(id, kind, status, note_id, plan_id, course_id, params, base_version, config_id, "
-                "model, input_chars, created_at) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (draft_id, spec.kind, spec.note_id, spec.plan_id, spec.course_id, dumps(spec.params),
-                 spec.base_version, config_id, cfg.model, spec.input_chars, now_iso()),
-            )
+        draft_id = start_draft(conn, kind=spec.kind, note_id=spec.note_id, plan_id=spec.plan_id,
+                               course_id=spec.course_id, params=spec.params, base_version=spec.base_version,
+                               config_id=config_id, model=cfg.model, input_chars=spec.input_chars)
     finally:
         conn.close()
 
@@ -677,13 +772,17 @@ async def run_task(body: RunIn) -> StreamingResponse:
                              "estimated_tokens": estimate_tokens("".join(m["content"] for m in spec.messages)),
                              "model": cfg.model})
         try:
+            check_running = lambda: _ensure_running(draft_id, generation)
+            check_running()
             if spec.stream:
                 finish_reason, usage = None, None
                 async for kind, value in gateway.stream_chat(
                     cfg, spec.messages, max_tokens=spec.max_tokens, temperature=float(settings["temperature"]),
                     idle_timeout=float(settings["idle_timeout_s"]),
                     total_timeout=float(settings["total_timeout_s"]),
+                    before_request=check_running,
                 ):
+                    check_running()
                     if kind == "delta":
                         parts.append(value)
                         yield _sse("delta", {"text": value})
@@ -700,62 +799,70 @@ async def run_task(body: RunIn) -> StreamingResponse:
                 else:
                     warnings = check_summary(spec.context["original"], output, spec.params["length"])
                 if finish_reason == "length":
-                    warnings.insert(0, "输出达到长度上限被截断，建议把笔记分段后再整理")
-                draft = _finish_draft(draft_id, status="ready", output=output, warnings=warnings, usage=usage,
+                    raise LLMError("TRUNCATED", "输出达到长度上限被截断，请把笔记分段后重试", detail=output[-2000:])
+                draft = _finish_draft(draft_id, generation=generation, status="ready", output=output, warnings=warnings, usage=usage,
                                       resolved_at=None)
             elif spec.kind == "compose":
                 result = warnings = raw = None
-                async for kind, value in _compose_batches(cfg, spec, settings):
+                async for kind, value in _compose_batches(cfg, spec, settings, check_running):
                     if kind == "progress":
                         yield _sse("progress", value)
                     else:
                         result, warnings, raw = value
-                draft = _finish_draft(draft_id, status="ready", output=raw, result=result, warnings=warnings, usage=None)
+                draft = _finish_draft(draft_id, generation=generation, status="ready", output=raw, result=result, warnings=warnings, usage=None)
             else:
                 if spec.kind == "extract":
                     parse = lambda d: _parse_extract(d, spec.params["count"])  # noqa: E731
                 elif spec.kind == "compose":
                     parse = lambda d: _parse_compose(d, spec.context["aliases"])  # noqa: E731
+                elif spec.kind == "outline":
+                    parse = lambda d: _parse_outline(d, spec.context)  # noqa: E731
                 else:
                     parse = lambda d: _parse_plan(d, spec.context)  # noqa: E731
-                result, warnings, (usage, raw) = await _call_json(cfg, spec, settings, parse)
-                draft = _finish_draft(draft_id, status="ready", output=raw, result=result, warnings=warnings,
+                result, warnings, (usage, raw) = await _call_json(cfg, spec, settings, parse, check_running)
+                draft = _finish_draft(draft_id, generation=generation, status="ready", output=raw, result=result, warnings=warnings,
                                       usage=usage)
+            if draft["status"] not in ("ready", "accepted", "edited"):
+                raise _TaskStopped(draft["status"])
             finished = True
             yield _sse("done", {"draft": draft})
+        except _TaskStopped as exc:
+            finished = True
+            yield _sse("error", {"draft_id": draft_id, "error": exc.to_dict(), "partial": "".join(parts)})
         except LLMError as exc:
             finished = True
-            _finish_draft(draft_id, status="failed", output="".join(parts) or exc.detail, error_kind=exc.kind,
-                          error_message=exc.message, resolved_at=now_iso())
-            yield _sse("error", {"draft_id": draft_id, "error": exc.to_dict(), "partial": "".join(parts)})
+            draft = _finish_draft(draft_id, generation=generation, status="failed", output="".join(parts) or exc.detail,
+                                  error_kind=exc.kind, error_message=exc.message, resolved_at=now_iso())
+            error = _TaskStopped(draft["status"]).to_dict() if draft["status"] != "failed" else exc.to_dict()
+            yield _sse("error", {"draft_id": draft_id, "error": error, "partial": "".join(parts)})
         except asyncio.CancelledError:
             # 用户关闭页面或取消生成：未确认的产出作废，原笔记不受影响（EX-06）
             finished = True
-            _finish_draft(draft_id, status="discarded", output="".join(parts) or None, resolved_at=now_iso())
+            _finish_draft(draft_id, generation=generation, status="discarded", output="".join(parts) or None, resolved_at=now_iso())
             raise
+        except AppError as exc:
+            finished = True
+            # Restore owns interruption state in the replacement database.
+            if exc.code != "RESTORE_INTERRUPTED":
+                _finish_draft(draft_id, generation=generation, status="failed", error_kind=exc.code,
+                              error_message=exc.message, resolved_at=now_iso())
+            yield _sse("error", {"draft_id": draft_id, "error": {"kind": exc.code, "message": exc.message,
+                                                                 "retryable": exc.retryable}})
         except Exception as exc:  # 兜底：不让草稿停在 running
             finished = True
-            _finish_draft(draft_id, status="failed", error_kind="UNKNOWN", error_message=str(exc)[:300],
+            _finish_draft(draft_id, generation=generation, status="failed", error_kind="UNKNOWN", error_message=str(exc)[:300],
                           resolved_at=now_iso())
             yield _sse("error", {"draft_id": draft_id, "error": {"kind": "UNKNOWN", "message": "处理时出错",
                                                                  "retryable": False}})
         finally:
             if not finished:
-                _finish_draft(draft_id, status="discarded", resolved_at=now_iso())
+                _finish_draft(draft_id, generation=generation, status="discarded", resolved_at=now_iso())
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ---------------------------------------------------------------- 草稿
-
-class AcceptIn(BaseModel):
-    content: str | None = Field(default=None, max_length=200_000)  # organize / summarize / compose
-    title: str | None = Field(default=None, max_length=100)  # compose
-    items: list[dict[str, str]] | None = Field(default=None, max_length=50)  # extract
-    tasks: list[dict[str, Any]] | None = Field(default=None, max_length=60)  # plan
-    course_id: str | None = None  # compose：存到哪个学科（默认资料所在的学科）
-
 
 @router.get("/ai/drafts/{draft_id}")
 def get_draft(draft_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
@@ -764,146 +871,9 @@ def get_draft(draft_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict
 
 @router.post("/ai/drafts/{draft_id}/discard")
 def discard_draft(draft_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    draft = _get_draft(conn, draft_id)
-    if draft["status"] in ("ready", "failed", "running"):
-        with conn:
-            conn.execute("UPDATE ai_drafts SET status = 'discarded', resolved_at = ? WHERE id = ?", (now_iso(), draft_id))
-    return _get_draft(conn, draft_id)
-
-
-SUMMARY_PREFIX = "> 摘要："
-
-
-def _apply_summary(content: str, summary: str) -> str:
-    """把摘要插入正文最前面；已有摘要块时替换它，不重复堆叠。"""
-    lines = content.split("\n")
-    if lines and lines[0].startswith(SUMMARY_PREFIX):
-        end = 0
-        while end < len(lines) and lines[end].startswith(">"):
-            end += 1
-        while end < len(lines) and not lines[end].strip():
-            end += 1
-        lines = lines[end:]
-    summary_line = SUMMARY_PREFIX + " ".join(summary.split())
-    rest = "\n".join(lines).lstrip("\n")
-    return summary_line + ("\n\n" + rest if rest else "\n")
+    return discard_draft_service(conn, draft_id)
 
 
 @router.post("/ai/drafts/{draft_id}/accept")
 def accept_draft(draft_id: str, body: AcceptIn, conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    draft = _get_draft(conn, draft_id)
-    if draft["status"] in ("accepted", "edited"):
-        # 重复点击采纳：幂等返回，不重复写入（同学 IF-03）
-        return {"draft": draft, "already": True}
-    if draft["status"] != "ready":
-        raise AppError(409, "DRAFT_NOT_READY", "这份草稿不能采纳（已放弃、失败或仍在生成）")
-    kind = draft["kind"]
-    now = now_iso()
-    payload: dict[str, Any] = {}
-
-    if kind in ("organize", "summarize"):
-        note = get_note_row(conn, draft["note_id"])
-        if note["version"] != draft["base_version"]:
-            raise AppError(409, "VERSION_CONFLICT", "生成期间这篇笔记被修改过，为避免覆盖，请重新生成")
-        text = (body.content if body.content is not None else draft["output"] or "").strip()
-        if not text:
-            raise AppError(422, "VALIDATION", "内容不能为空", field="content")
-        edited = text != (draft["output"] or "").strip()
-        new_content = text if kind == "organize" else _apply_summary(note["content"], text)
-        with conn:
-            save_revision(conn, note, "before_ai_organize" if kind == "organize" else "before_ai_summary", draft_id)
-            conn.execute("UPDATE notes SET content = ?, version = version + 1, updated_at = ? WHERE id = ?",
-                         (new_content, now, note["id"]))
-            conn.execute("UPDATE ai_drafts SET status = ?, resolved_at = ? WHERE id = ?",
-                         ("edited" if edited else "accepted", now, draft_id))
-        payload["note"] = note_detail(conn, get_note_row(conn, note["id"]))
-
-    elif kind == "extract":
-        note = get_note_row(conn, draft["note_id"])
-        items = body.items if body.items is not None else (draft["result"] or {}).get("items", [])
-        clean = []
-        for i, item in enumerate(items):
-            front, back = str(item.get("front", "")).strip(), str(item.get("back", "")).strip()
-            if not (1 <= len(front) <= 200 and 1 <= len(back) <= 2000):
-                raise AppError(422, "VALIDATION", f"第 {i + 1} 张卡片的正面需 1–200 字、背面需 1–2000 字",
-                               field=f"items.{i}")
-            clean.append((front, back))
-        if not clean:
-            raise AppError(422, "VALIDATION", "至少保留一张卡片")
-        edited = [{"front": f, "back": b} for f, b in clean] != (draft["result"] or {}).get("items")
-        due = today_str(int(get_settings(conn)["day_start_hour"]))
-        with conn:
-            conn.executemany(
-                "INSERT INTO cards(id, course_id, source_note_id, source_draft_id, front, back, due, created_at, "
-                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [(new_id(), note["course_id"], note["id"], draft_id, f, b, due, now, now) for f, b in clean],
-            )
-            conn.execute("UPDATE ai_drafts SET status = ?, resolved_at = ? WHERE id = ?",
-                         ("edited" if edited else "accepted", now, draft_id))
-        payload["created_cards"] = len(clean)
-
-    elif kind == "compose":
-        result = draft["result"] or {}
-        content = (body.content if body.content is not None else result.get("content", "")).strip()
-        title = (body.title or result.get("title") or "资料整理笔记").strip()[:100]
-        if not content:
-            raise AppError(422, "VALIDATION", "内容不能为空", field="content")
-        course_id = body.course_id or draft["course_id"]
-        get_course(conn, course_id)
-        note_id = new_id()
-        edited = content != result.get("content", "").strip() or title != result.get("title")
-        with conn:
-            conn.execute(
-                "INSERT INTO notes(id, course_id, title, content, tags, version, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, '[]', 1, ?, ?)",
-                (note_id, course_id, title, content, now, now),
-            )
-            conn.executemany(
-                "INSERT INTO note_sources(id, note_id, ord, material_id, unit_id, material_name, locator, label, "
-                "precision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [(new_id(), note_id, s["ord"], s["material_id"], s["unit_id"], s["material_name"], s["locator"],
-                  s["label"], s.get("precision", "unit")) for s in result.get("sources", [])],
-            )
-            conn.execute("UPDATE ai_drafts SET status = ?, note_id = ?, resolved_at = ? WHERE id = ?",
-                         ("edited" if edited else "accepted", note_id, now, draft_id))
-        payload["note"] = note_detail(conn, get_note_row(conn, note_id))
-
-    elif kind == "plan":
-        plan = get_plan_row(conn, draft["plan_id"])
-        today = today_str(int(get_settings(conn)["day_start_hour"]))
-        tasks = body.tasks if body.tasks is not None else (draft["result"] or {}).get("tasks", [])
-        normalized = []
-        for t in tasks:
-            minutes = t.get("estimated_minutes")
-            normalized.append({
-                "title": str(t.get("title") or "").strip(),
-                "kind": t.get("kind"),
-                "due_date": t.get("due_date") or None,
-                "estimated_minutes": int(minutes) if isinstance(minutes, (int, float)) and minutes else None,
-                "note_ids": [n for n in t.get("note_ids") or [] if isinstance(n, str)],
-            })
-        if not normalized:
-            raise AppError(422, "VALIDATION", "至少保留一个任务")
-        existing = [t for t in plan_tasks(conn, plan["id"], today) if t["status"] != "done"]
-        problems = validate_tasks(normalized, today=today, deadline=plan["deadline"],
-                                  daily_minutes=plan["daily_minutes"], existing=existing)
-        if problems:
-            raise AppError(422, "PLAN_INVALID", "还有任务不满足计划的时间约束，请调整后再采纳",
-                           extra={"problems": problems})
-        edited = normalized != (draft["result"] or {}).get("tasks")
-        start = conn.execute("SELECT COALESCE(MAX(sort), 0) FROM tasks WHERE plan_id = ?", (plan["id"],)).fetchone()[0]
-        with conn:
-            conn.executemany(
-                "INSERT INTO tasks(id, plan_id, title, kind, due_date, estimated_minutes, note_ids, sort, created_at, "
-                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [(new_id(), plan["id"], t["title"], t["kind"], t["due_date"], t["estimated_minutes"],
-                  dumps(t["note_ids"]), start + i + 1, now, now) for i, t in enumerate(normalized)],
-            )
-            conn.execute("UPDATE plans SET updated_at = ? WHERE id = ?", (now, plan["id"]))
-            conn.execute("UPDATE ai_drafts SET status = ?, resolved_at = ? WHERE id = ?",
-                         ("edited" if edited else "accepted", now, draft_id))
-        payload["created_tasks"] = len(normalized)
-        payload["tasks"] = [task_out(r, today) for r in conn.execute(
-            "SELECT * FROM tasks WHERE plan_id = ? ORDER BY sort DESC LIMIT ?", (plan["id"], len(normalized)))]
-
-    return {"draft": _get_draft(conn, draft_id), **payload}
+    return accept_draft_service(conn, draft_id, body)

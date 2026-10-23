@@ -293,7 +293,8 @@ type DraftTask = { title: string; kind: string; due_date: string | null; estimat
 
 function PlanAiSheet({ open, plan, onClose, onAccepted }: { open: boolean; plan: Plan; onClose: () => void; onAccepted: () => void }) {
   const ai = useAiTask();
-  const { data: notes } = useSWR<NoteSummary[]>(open ? `/api/notes${plan.course_id ? `?course_id=${plan.course_id}` : ""}` : null, fetcher);
+  const { data: noteIndex } = useSWR<Pick<NoteSummary, "id" | "title" | "course_id">[]>(open ? "/api/notes/index" : null, fetcher);
+  const notes = noteIndex?.filter((note) => !plan.course_id || note.course_id === plan.course_id);
   const [scope, setScope] = useState<Set<string>>(new Set());
   const [tasks, setTasks] = useState<DraftTask[]>([]);
   const [problems, setProblems] = useState<Problem[]>([]);

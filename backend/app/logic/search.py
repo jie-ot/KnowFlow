@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import sqlite3
+import heapq
 from typing import Any
 
 from .text import plain_excerpt
@@ -75,6 +76,17 @@ def search(conn: sqlite3.Connection, query: str, course_id: str | None = None,
     types = types or {"note", "material", "card"}
     terms = _terms(query)
     results: list[dict[str, Any]] = []
+    best_results: list[tuple[int, str, int, dict[str, Any]]] = []
+    ordinal = 0
+
+    def offer(item: dict[str, Any]) -> None:
+        nonlocal ordinal
+        entry = (item["_score"], item["updated_at"], -ordinal, item)
+        ordinal += 1
+        if len(best_results) < limit:
+            heapq.heappush(best_results, entry)
+        elif entry[:3] > best_results[0][:3]:
+            heapq.heapreplace(best_results, entry)
 
     if not terms:
         if "note" in types:
@@ -95,15 +107,15 @@ def search(conn: sqlite3.Connection, query: str, course_id: str | None = None,
 
     if "note" in types:
         clause, params = _like_clause(["title", "content"], terms)
-        sql = f"SELECT * FROM notes WHERE deleted_at IS NULL AND {clause}"
+        sql = f"SELECT id, title, content, course_id, updated_at FROM notes WHERE deleted_at IS NULL AND {clause}"
         if course_id:
             sql += " AND course_id = ?"
             params.append(course_id)
         for row in conn.execute(sql, params):
-            results.append({
+            offer({
                 "type": "note", "id": row["id"], "title": row["title"],
                 "course_id": row["course_id"], "updated_at": row["updated_at"],
-                "snippet": snippet(row["content"], terms),
+                "_body": row["content"],
                 "_score": _score(row["title"], row["content"], terms),
             })
 
@@ -127,27 +139,30 @@ def search(conn: sqlite3.Connection, query: str, course_id: str | None = None,
                     "type": "material", "id": row["mid"], "title": row["display_title"],
                     "course_id": row["course_id"], "updated_at": row["updated_at"],
                     "unit_id": row["uid"], "unit_label": row["label"],
-                    "snippet": snippet(row["text"], terms), "_score": score,
+                    "_body": row["text"], "_score": score,
                 }
-        results.extend(best.values())
+        for item in best.values():
+            offer(item)
 
     if "card" in types:
         clause, params = _like_clause(["front", "back"], terms)
-        sql = f"SELECT * FROM cards WHERE deleted_at IS NULL AND {clause}"
+        sql = f"SELECT id, course_id, source_note_id, front, back, updated_at FROM cards WHERE deleted_at IS NULL AND {clause}"
         if course_id:
             sql += " AND course_id = ?"
             params.append(course_id)
         for row in conn.execute(sql, params):
-            results.append({
+            offer({
                 "type": "card", "id": row["id"], "title": row["front"],
                 "course_id": row["course_id"], "updated_at": row["updated_at"],
                 "source_note_id": row["source_note_id"],
-                "snippet": snippet(row["back"], terms),
+                "_body": row["back"],
                 "_score": _score(row["front"], row["back"], terms),
             })
 
-    results.sort(key=lambda r: r["updated_at"], reverse=True)
-    results.sort(key=lambda r: r["_score"], reverse=True)
+    # Only visible hits need a snippet. Rank ties keep the original category and
+    # row order, matching the previous stable sorts without retaining all bodies.
+    results = [entry[3] for entry in sorted(best_results, reverse=True)]
     for r in results:
         r.pop("_score", None)
-    return results[:limit]
+        r["snippet"] = snippet(r.pop("_body"), terms)
+    return results
