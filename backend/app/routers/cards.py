@@ -66,8 +66,12 @@ def list_cards(course_id: str | None = None, note_id: str | None = None, weak: b
 def create_card(body: CardIn, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     """手动建卡（FR-14）。新卡当天到期。"""
     get_course(conn, body.course_id)
+    if not body.front.strip() or not body.back.strip():
+        raise AppError(422, "VALIDATION", "问题和答案不能为空")
     if body.source_note_id:
-        get_note_row(conn, body.source_note_id)
+        source = get_note_row(conn, body.source_note_id)
+        if source["course_id"] != body.course_id:
+            raise AppError(422, "VALIDATION", "卡片应与来源笔记属于同一学科", field="course_id")
     card_id, now = new_id(), now_iso()
     with conn:
         conn.execute(
@@ -84,6 +88,8 @@ def update_card(card_id: str, body: CardPatch, conn: sqlite3.Connection = Depend
     get_card_row(conn, card_id)
     fields = {k: (v.strip() if isinstance(v, str) else v) for k, v in body.model_dump(exclude_unset=True).items()
               if v is not None}
+    if any(field in fields and not fields[field] for field in ("front", "back")):
+        raise AppError(422, "VALIDATION", "问题和答案不能为空")
     if "course_id" in fields:
         get_course(conn, fields["course_id"])
     if fields:

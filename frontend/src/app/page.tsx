@@ -1,16 +1,16 @@
 "use client";
 
-import { ArrowUpRight, BookOpenCheck, Check, FilePlus2, FileUp, Pencil, Plus, Sparkles, Target, X } from "lucide-react";
+import { ArrowUpRight, Check, FilePlus2, FileUp, Pencil, Plus } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
 import { api, ApiError, Card, Course, fetcher, Note, NoteSummary, Plan, Task } from "@/lib/api";
 import { isNoteListCacheKey } from "@/lib/note-list-cache";
-import { colorOf, greeting, relTime, shiftDay, TASK_KINDS, todayLabel } from "@/lib/format";
+import { colorOf, relTime, shiftDay, TASK_KINDS, todayLabel } from "@/lib/format";
 import { Heatmap } from "@/components/Heatmap";
 import { FocusButton } from "@/components/Focus";
 import { QuickReview, WeeklySummary } from "@/components/HomeWidgets";
-import { Dot, useToast } from "@/components/ui";
+import { Dot, Empty, Spinner, useToast } from "@/components/ui";
 
 type Stats = {
   today: string; streak: number; accuracy_7d: number | null; reviewed_today: number; due_today: number;
@@ -20,7 +20,7 @@ type Stats = {
 };
 
 export default function Today() {
-  const { data: stats } = useSWR<Stats>("/api/stats?days=365", fetcher);
+  const { data: stats, error, mutate: mutateStats } = useSWR<Stats>("/api/stats?days=365", fetcher);
   const { data: tasks, mutate: mutateTasks } = useSWR<{ today: string; items: Task[] }>("/api/tasks/today", fetcher);
   const { data: recentNotes } = useSWR<{ items: NoteSummary[] }>("/api/notes/page?limit=5", fetcher);
   const notes = recentNotes?.items;
@@ -32,13 +32,17 @@ export default function Today() {
   const [quick, setQuick] = useState(false);
   const toast = useToast();
   const toggle = async (t: Task) => {
-    await api(`/api/tasks/${t.id}`, { method: "PATCH", json: { status: t.status === "done" ? "todo" : "done" } });
-    mutateTasks();
+    try {
+      await api(`/api/tasks/${t.id}`, { method: "PATCH", json: { status: t.status === "done" ? "todo" : "done" } });
+      mutateTasks();
+    } catch (e) { toast((e as Error).message, "bad"); }
   };
   const postpone = async (t: Task) => {
-    await api(`/api/tasks/${t.id}`, { method: "PATCH", json: { due_date: shiftDay(tasks!.today, 1) } });
-    toast(`「${t.title}」改到明天了`);
-    mutateTasks();
+    try {
+      await api(`/api/tasks/${t.id}`, { method: "PATCH", json: { due_date: shiftDay(tasks!.today, 1) } });
+      toast(`「${t.title}」改到明天了`);
+      mutateTasks();
+    } catch (e) { toast((e as Error).message, "bad"); }
   };
 
   const due = stats?.due_today ?? 0;
@@ -46,46 +50,34 @@ export default function Today() {
   const openTasks = tasks?.items.filter((t) => t.status !== "done") || [];
   const minutes = openTasks.reduce((s, t) => s + (t.estimated_minutes || 0), 0);
 
+  if (error) return <Empty title="暂时无法读取学习内容"><button className="btn btn-outline mt-3" onClick={() => mutateStats()}>重新加载</button></Empty>;
+  if (!stats) return <div className="p-12 text-muted flex items-center gap-2" role="status"><Spinner />正在加载…</div>;
+
   return (
-    <div className="max-w-[1040px] mx-auto px-10 py-12">
-      <header className="mb-8 flex items-end justify-between gap-4 flex-wrap">
+    <div className="desktop-page home-page">
+      <header className="mb-8 pb-7 border-b border-rule flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <p className="text-[14px] text-muted">{todayLabel()}</p>
-          <h1 className="text-[30px] font-semibold tracking-tight mt-1">{greeting()}</h1>
+          <h1 className="text-[28px] font-semibold tracking-tight">今天</h1>
+          <p className="text-[13px] text-muted mt-2">{todayLabel()}</p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
-          <Link href="/notes?new=1" className="btn btn-outline"><FilePlus2 size={14} />新建笔记</Link>
+          <Link href="/notes?new=1" className="btn btn-primary"><FilePlus2 size={14} />新建笔记</Link>
           <Link href="/materials" className="btn btn-outline"><FileUp size={14} />上传资料</Link>
-          <Link href="/plans?new=1" className="btn btn-outline"><Target size={14} />新建计划</Link>
-          <button className="btn btn-outline" onClick={() => window.dispatchEvent(new Event("kf-assistant"))}>
-            <Sparkles size={14} className="text-accent" />问 AI
-          </button>
         </div>
       </header>
 
-      <GuideBanner />
       <QuickCapture courses={courses || []} />
-
-      {ai && !ai.configured && (
-        <Link href="/settings"
-          className="flex items-center gap-3 mb-8 px-4 py-3 rounded-xl border border-rule hover:bg-hover transition-colors">
-          <Sparkles size={16} className="text-accent" />
-          <span className="text-[14px] flex-1">连接大模型后，就能让 AI 整理笔记、写摘要、提炼知识点和排计划。</span>
-          <span className="text-[13px] text-accent font-medium">去设置</span>
-        </Link>
-      )}
-
-      <div className="grid grid-cols-[minmax(0,420px)_1fr] gap-14 max-[900px]:grid-cols-1">
+      <div className="home-columns">
         {/* 今日复习：整页唯一的“实物” */}
         <section>
           <h2 className="section-title">今日复习</h2>
           {quick ? <QuickReview onExit={() => setQuick(false)} /> : (
-          <div className="card-stack" style={{ "--course": colorOf(dueCourses[0]?.color) } as React.CSSProperties}>
-            <div className="index-card px-7 pt-10 pb-7" style={{ "--course": due ? colorOf(dueCourses[0]?.color) : "var(--rule)" } as React.CSSProperties}>
+          <div className={due ? "card-stack" : ""} style={{ "--course": colorOf(dueCourses[0]?.color) } as React.CSSProperties}>
+            <div className={`${due ? "index-card pt-10" : "rounded-2xl border border-rule bg-canvas pt-7"} px-7 pb-7`} style={{ "--course": due ? colorOf(dueCourses[0]?.color) : "var(--rule)" } as React.CSSProperties}>
               {due > 0 ? (
                 <>
-                  <p className="font-serif text-[52px] leading-none tabular-nums">{due}</p>
-                  <p className="text-[15px] mt-2">张卡片等你回忆</p>
+                  <p className="text-[56px] font-semibold tracking-[-0.06em] leading-none tabular-nums">{due}</p>
+                  <p className="text-[14px] text-muted mt-2">张待复习卡片</p>
                   <div className="mt-6 space-y-2">
                     {dueCourses.map((c) => (
                       <Link key={c.id} href={`/review?course=${c.id}`}
@@ -97,26 +89,26 @@ export default function Today() {
                     ))}
                   </div>
                   <div className="flex gap-2 mt-7">
-                    <button className="btn btn-primary h-10 px-5 text-[14px] flex-1" onClick={() => setQuick(true)}>在这里翻卡</button>
-                    <Link href="/review" className="btn btn-outline h-10 px-4 text-[14px]">复习页</Link>
+                    <Link href="/review" className="btn btn-primary h-10 px-5 text-[14px] flex-1">开始复习</Link>
+                    <button className="btn btn-outline h-10 px-4 text-[14px]" onClick={() => setQuick(true)}>快速翻卡</button>
                   </div>
                 </>
               ) : (
                 <>
-                  <p className="font-serif text-[22px] leading-snug">今天的卡片都复习完了</p>
+                  <p className="text-[18px] font-medium leading-snug">{!stats.total_cards ? "还没有复习卡片" : stats.reviewed_today ? "今天的复习已完成" : "今天没有到期卡片"}</p>
                   <p className="text-[13.5px] text-muted mt-2">
                     {stats?.reviewed_today ? `今天回忆了 ${stats.reviewed_today} 张。` : ""}
-                    {stats?.total_cards ? "新卡片会在到期那天出现在这里。" : "从笔记里提炼知识点，就会生成复习卡片。"}
+                    {stats?.total_cards ? "到期卡片会出现在这里。" : "从笔记制卡，或手动添加。"}
                   </p>
-                  <Link href={stats?.total_cards ? "/review?tab=cards" : "/notes"} className="btn btn-outline mt-6">
-                    {stats?.total_cards ? "查看全部卡片" : "去写笔记"}
+                  <Link href={courses?.length ? "/review?tab=cards" : "/notes?new=1"} className="btn btn-outline mt-6">
+                    {stats?.total_cards ? "查看卡片库" : courses?.length ? "创建卡片" : "新建笔记"}
                   </Link>
                 </>
               )}
             </div>
           </div>
           )}
-          {stats && (
+          {stats.series.some((d) => d.total > 0) && (
             <div className="mt-12">
               <Heatmap series={stats.series} today={stats.today} streak={stats.streak} accuracy={stats.accuracy_7d} />
             </div>
@@ -137,7 +129,7 @@ export default function Today() {
         </section>
 
         <div className="space-y-12 min-w-0">
-          <section>
+          <section className="home-section">
             <div className="flex items-baseline justify-between">
               <h2 className="section-title">今日计划</h2>
               <span className="flex items-center gap-3">
@@ -150,12 +142,12 @@ export default function Today() {
             {adding && tasks && <AddTodayTask today={tasks.today} onDone={() => { setAdding(false); mutateTasks(); }} />}
             {tasks && tasks.items.length === 0 && (
               !adding && (
-                <p className="text-[14px] text-muted py-3">
-                  今天没有安排任务。<button className="text-accent" onClick={() => setAdding(true)}>加一个</button>，或<Link href="/plans?view=calendar" className="text-accent">打开月历</Link>
+                <p className="text-[14px] text-muted py-5">
+                  今天没有安排任务。<Link href="/plans" className="text-accent ml-2">查看计划</Link>
                 </p>
               )
             )}
-            <ul className="divide-y divide-rule border-y border-rule">
+            <ul className="divide-y divide-rule">
               {tasks?.items.map((t) => (
                 <li key={t.id} className="group flex items-center gap-3 py-3">
                   <button onClick={() => toggle(t)} aria-label={t.status === "done" ? "标为未完成" : "标为完成"}
@@ -184,7 +176,7 @@ export default function Today() {
             </ul>
           </section>
 
-          <section>
+          <section className="home-section">
             <div className="flex items-baseline justify-between">
               <h2 className="section-title">最近的笔记</h2>
               <span className="flex items-center gap-3">
@@ -192,7 +184,7 @@ export default function Today() {
                 <Link href="/notes" className="text-[12px] text-muted hover:text-ink">全部笔记</Link>
               </span>
             </div>
-            <ul className="divide-y divide-rule border-y border-rule">
+            <ul className="divide-y divide-rule">
               {notes?.slice(0, 5).map((n) => (
                 <li key={n.id} className="group relative">
                   <Link href={`/notes?id=${n.id}&edit=1`} title="直接编辑"
@@ -214,7 +206,7 @@ export default function Today() {
             {notes?.length === 0 && <p className="text-[14px] text-muted py-3">还没有笔记。</p>}
           </section>
 
-          <WeeklySummary />
+          {ai?.configured && (notes?.length || stats.total_cards) ? <WeeklySummary /> : null}
         </div>
       </div>
 
@@ -250,9 +242,10 @@ function QuickCapture({ courses }: { courses: Course[] }) {
   };
   if (!courses.length) return null;
   return (
-    <div className="mb-10 rounded-2xl border border-rule bg-paper px-4 pt-3 pb-2.5 focus-within:border-accent focus-within:shadow-[0_0_0_3px_var(--accent-soft)] transition-shadow">
+    <div className="quick-capture mb-7 border border-rule px-4 pt-3 pb-2.5 focus-within:border-accent focus-within:shadow-[0_0_0_3px_var(--accent-soft)] transition-shadow">
       <textarea value={text} onChange={(e) => { setText(e.target.value); setSaved(null); }} rows={1} maxLength={20000}
-        placeholder="快速记一笔：想到什么先记下来。第一行当标题，回车保存，Shift+回车换行"
+        placeholder="快速记一笔…"
+        aria-label="快速记一笔"
         className="w-full resize-none bg-transparent outline-none text-[14.5px] leading-7 placeholder:text-faint max-h-48"
         style={{ fieldSizing: "content" } as React.CSSProperties}
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); save(); } }} />
@@ -262,6 +255,7 @@ function QuickCapture({ courses }: { courses: Course[] }) {
           {courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <span className="flex-1" />
+        {!saved && <span className="text-faint hidden sm:inline">Enter 保存 · Shift+Enter 换行</span>}
         {saved && (
           <Link href={`/notes?id=${saved.id}&edit=1`} className="text-accent anim-fade">已存为《{saved.title}》，继续编辑 →</Link>
         )}
@@ -306,23 +300,6 @@ function AddTodayTask({ today, onDone }: { today: string; onDone: () => void }) 
         </select>
       )}
       <button className="btn btn-primary h-8" disabled={!title.trim()} onClick={add}>添加</button>
-    </div>
-  );
-}
-
-/** 第一次打开时提示看使用说明，关掉后不再出现 */
-function GuideBanner() {
-  const [show, setShow] = useState(false);
-  useEffect(() => {
-    try { setShow(!localStorage.getItem("kf-guide-seen")); } catch {}
-  }, []);
-  if (!show) return null;
-  const hide = () => { setShow(false); try { localStorage.setItem("kf-guide-seen", "1"); } catch {} };
-  return (
-    <div className="flex items-center gap-3 mb-6 px-4 py-3 rounded-xl bg-accent-soft anim-fade">
-      <BookOpenCheck size={17} className="text-accent shrink-0" />
-      <p className="flex-1 text-[14px]">第一次用 KnowFlow？花两分钟看看<Link href="/guide" onClick={hide} className="text-accent font-medium mx-1">使用说明</Link>，或者按 Ctrl+J 直接问 AI。</p>
-      <button className="btn btn-icon h-7 w-7 text-muted" onClick={hide} aria-label="不再提示"><X size={14} /></button>
     </div>
   );
 }

@@ -13,7 +13,7 @@ export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>("model");
   useEffect(() => { if (window.location.hash === "#backup") setTab("backup"); }, []);
   return (
-    <div className="max-w-[760px] mx-auto px-10 py-12">
+    <div className="desktop-page !max-w-[960px]">
       <PageHeader title="设置" actions={
         <div className="seg">
           <button data-on={tab === "model"} onClick={() => setTab("model")}>大模型</button>

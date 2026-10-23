@@ -2,7 +2,6 @@
 __pycache__/
 *.pyc
 backend/.venv/
-backend/.pytest_cache/
 backend/data/
 
 # Node
@@ -11,6 +10,30 @@ frontend/.npm-cache/
 frontend/.next/
 frontend/next-env.d.ts
 frontend/tsconfig.tsbuildinfo
+
+# 本地临时测试与验证产物；保留 backend/tests、frontend/tests 正式回归测试
+.pytest_cache/
+.coverage
+.coverage.*
+coverage/
+htmlcov/
+.nyc_output/
+test-results/
+playwright-report/
+blob-report/
+.knowflow-qa/
+.playwright-cli/
+/output/playwright/
+/output/verification/
+/output/validation/
+/tmp-tests/
+
+# 本机性能结果及阶段验证说明
+/docs/performance*.json
+/docs/performance.md
+/docs/实施与验证记录.md
+/docs/桌面网页优化说明.md
+/docs/桌面体验升级说明.md
 
 # macOS
 .DS_Store

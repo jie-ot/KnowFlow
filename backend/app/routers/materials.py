@@ -17,8 +17,9 @@ from .. import config
 from ..db import connect, dumps, get_db, new_id, now_iso, row_to_dict
 from ..errors import AppError, not_found
 from ..logic.extract import WARNING_TEXT, check_content_type, detect_format, extract
+from ..logic.links import pin_title_references, resolve_links
 from ..logic.text import char_count
-from ..repo import get_course
+from ..repo import get_course, get_note_row, note_detail
 from ..services.coordination import current_generation, generation_scope
 from ..services.transactions import atomic_write
 
@@ -33,11 +34,57 @@ class UnitPatch(BaseModel):
     text: str = Field(max_length=100_000)
 
 
+class ExcerptIn(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    unit_ids: list[str] = Field(min_length=1, max_length=1000)
+
+
 def _material(conn: sqlite3.Connection, material_id: str) -> dict[str, Any]:
     row = conn.execute("SELECT * FROM materials WHERE id = ?", (material_id,)).fetchone()
     if row is None:
         raise not_found("资料")
     return dict(row)
+
+
+@router.post("/{material_id}/excerpt", status_code=201)
+def save_excerpt(material_id: str, body: ExcerptIn, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    """将用户选定的原文保存为笔记，并在同一事务中保留逐段出处。"""
+    with atomic_write(conn):
+        material = _material(conn, material_id)
+        ids = list(dict.fromkeys(body.unit_ids))
+        placeholders = ",".join("?" for _ in ids)
+        units = conn.execute(
+            f"SELECT * FROM material_units WHERE material_id = ? AND id IN ({placeholders}) ORDER BY ordinal",
+            (material_id, *ids),
+        ).fetchall()
+        if len(units) != len(ids):
+            raise AppError(422, "INVALID_SELECTION", "选中的片段已变化，请刷新后重选")
+        title = body.title.strip()
+        if not title or any(not unit["text"].strip() for unit in units):
+            raise AppError(422, "VALIDATION", "标题和选中的片段不能为空")
+        parts, definitions = [], []
+        for number, unit in enumerate(units, 1):
+            quoted = "\n".join("> " + line for line in unit["text"].splitlines())
+            parts.append(f"{quoted}\n\n来源[^{number}]")
+            label = (material["display_title"] + " · " + unit["label"]).replace("[", "\\[").replace("]", "\\]")
+            definitions.append(f"[^{number}]: [{label}](/materials/view?id={material_id}&unit={unit['id']})")
+        content = "\n\n".join(parts) + "\n\n" + "\n".join(definitions)
+        if len(content) > 200_000:
+            raise AppError(422, "VALIDATION", "摘录超过单篇笔记容量，请减少选中的片段")
+        note_id, now = new_id(), now_iso()
+        pin_title_references(conn, title)
+        conn.execute(
+            "INSERT INTO notes(id, course_id, title, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, '[]', ?, ?)",
+            (note_id, material["course_id"], title, content, now, now),
+        )
+        conn.executemany(
+            "INSERT INTO note_sources(id, note_id, ord, material_id, unit_id, material_name, locator, label, precision, quote) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unit', ?)",
+            [(new_id(), note_id, n, material_id, u["id"], material["display_title"], u["locator"], u["label"], u["text"])
+             for n, u in enumerate(units, 1)],
+        )
+        resolve_links(conn, content, note_id)
+    return note_detail(conn, get_note_row(conn, note_id))
 
 
 def _unit_out(row: sqlite3.Row) -> dict[str, Any]:

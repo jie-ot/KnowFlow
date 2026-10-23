@@ -14,7 +14,7 @@ type Props = {
   placeholder?: string;
 };
 
-export type EditorHandle = { focus: () => void };
+export type EditorHandle = { focus: () => void; selectedText: () => string };
 
 const LIST_RE = /^(\s*)([-*+] \[[ x]\] |[-*+] |(\d+)\. |> )(.*)$/;
 
@@ -61,7 +61,10 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
   const el = useRef<HTMLTextAreaElement>(null);
   const [ac, setAc] = useState<{ start: number; query: string; x: number; y: number; lh: number } | null>(null);
   const [index, setIndex] = useState(0);
-  useImperativeHandle(ref, () => ({ focus: () => el.current?.focus() }), []);
+  useImperativeHandle(ref, () => ({
+    focus: () => el.current?.focus(),
+    selectedText: () => { const field = el.current; return field ? field.value.slice(field.selectionStart, field.selectionEnd) : ""; },
+  }), []);
 
   const matches = useMemo(() => {
     if (!ac) return [];

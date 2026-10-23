@@ -16,7 +16,6 @@ from . import config
 from .db import connect, init_db, now_iso
 from .errors import AppError, install_handlers
 from .routers import ai, assistant, cards, courses, extras, learning, materials, misc, notes, plans
-from .seed import seed
 from .services.coordination import async_request_scope, current_generation, dataset_token
 
 
@@ -69,7 +68,7 @@ class GuardMiddleware:
 
 
 def startup_tasks() -> None:
-    is_new = init_db()
+    init_db()
     conn = connect()
     try:
         with conn:
@@ -81,8 +80,6 @@ def startup_tasks() -> None:
             conn.execute("DELETE FROM ai_drafts WHERE resolved_at IS NOT NULL AND resolved_at < datetime('now', ?)",
                          (f"-{config.DRAFT_RETENTION_DAYS} days",))
         notes.purge_expired(conn)
-        if is_new:
-            seed(conn)
     finally:
         conn.close()
 

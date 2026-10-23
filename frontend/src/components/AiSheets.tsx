@@ -228,7 +228,7 @@ export function ExtractSheet({
             <div className="flex gap-3">
               <span className="text-[12px] text-faint tabular-nums pt-2 w-5">{i + 1}</span>
               <div className="flex-1 space-y-2">
-                <input className="input font-serif text-[15px]" value={item.front} placeholder="正面：问题或关键词"
+                <input className="input text-[15px]" value={item.front} placeholder="正面：问题或关键词"
                   style={!item.front.trim() ? { borderColor: "var(--bad)" } : undefined}
                   onChange={(e) => setItems((xs) => xs.map((x, j) => (j === i ? { ...x, front: e.target.value } : x)))} />
                 <textarea className="input text-[13.5px]" rows={3} value={item.back} placeholder="背面：要点内容"

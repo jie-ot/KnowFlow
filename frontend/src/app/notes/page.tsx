@@ -2,7 +2,7 @@
 
 import {
   BookOpen, ChevronDown, Download, FileDown, FileUp, History, Layers, Link2, MoreHorizontal, Network, Pencil, Plus,
-  Search, Sparkles, Trash2, X,
+  PanelLeftClose, PanelLeftOpen, Search, Sparkles, Trash2, X,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -15,7 +15,8 @@ import { CompareSheet, ExtractSheet } from "@/components/AiSheets";
 import { OutlineSheet } from "@/components/OutlineSheet";
 import { Markdown } from "@/components/Markdown";
 import { EditorHandle, MarkdownEditor, TitleOption } from "@/components/MarkdownEditor";
-import { CourseDialog } from "@/components/Shell";
+import { CourseDialog, ModifierKey } from "@/components/Shell";
+import { CardEditor, CardSource } from "@/components/CardEditor";
 import { Dot, Empty, Modal, useConfirm, useToast } from "@/components/ui";
 import { isNoteDraftKey, NoteDraft, NoteFields, NoteSaveCoordinator, SaveSnapshot } from "@/lib/note-save";
 import { isNoteListCacheKey } from "@/lib/note-list-cache";
@@ -51,6 +52,8 @@ function Notes() {
   const [exporting, setExporting] = useState(false);
   const [outlining, setOutlining] = useState(false);
   const [editCourse, setEditCourse] = useState(false);
+  const [creatingCourse, setCreatingCourse] = useState(false);
+  const [listHidden, setListHidden] = useState(false);
   const toast = useToast();
   const confirm = useConfirm();
   const importRef = useRef<HTMLInputElement>(null);
@@ -94,18 +97,20 @@ function Notes() {
     router.replace(`/notes?${p.toString()}`);
   };
 
+  const createInCourse = async (target: string) => {
+    try {
+      const n = await api<Note>("/api/notes", { method: "POST", json: { course_id: target, title: "未命名笔记" } });
+      setPaging({ scope, offset: 0 });
+      await Promise.all([mutateList(), mutateAll()]);
+      globalMutate("/api/courses");
+      setFresh(n.id);
+      setParam("id", n.id);
+    } catch (e) { toast((e as Error).message, "bad"); }
+  };
   const create = async () => {
     const target = courseId || courses?.[0]?.id;
-    if (!target) {
-      toast("先在左侧新建一个学科", "bad");
-      return;
-    }
-    const n = await api<Note>("/api/notes", { method: "POST", json: { course_id: target, title: "未命名笔记" } });
-    setPaging({ scope, offset: 0 });
-    await Promise.all([mutateList(), mutateAll()]);
-    globalMutate("/api/courses");
-    setFresh(n.id);
-    setParam("id", n.id);
+    if (!target) { if (params.get("new")) setParam("new", null); setCreatingCourse(true); return; }
+    await createInCourse(target);
   };
 
   // ⌘K 里的“新建笔记”
@@ -179,6 +184,7 @@ function Notes() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || document.querySelector('[role="dialog"]')) return;
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "n") { e.preventDefault(); create(); }
     };
     window.addEventListener("keydown", onKey);
@@ -231,8 +237,8 @@ function Notes() {
   };
 
   return (
-    <div className="flex h-full">
-      <section className="w-[300px] shrink-0 border-r border-rule flex flex-col">
+    <div className="notes-workspace flex h-full min-h-0">
+      <section className={`notes-list shrink-0 border-r border-rule flex flex-col ${listHidden && noteId ? "hidden" : ""}`} aria-label="笔记列表">
         <div className="px-4 pt-5 pb-3">
           <div className="flex items-center gap-2 mb-3">
             {course && <Dot color={course.color} size={10} />}
@@ -244,11 +250,11 @@ function Notes() {
               ]} />
             )}
             <Link href={courseId ? `/graph?course=${courseId}` : "/graph"} className="btn btn-icon text-muted" aria-label="知识图谱" title="知识图谱"><Network size={16} /></Link>
-            <button className="btn btn-icon" onClick={create} aria-label="新建笔记" title="新建笔记（⌘⇧N）"><Plus size={17} /></button>
+            <button className="btn btn-icon text-accent" onClick={create} aria-label="新建笔记" title="新建笔记"><Plus size={17} /></button>
           </div>
           <div className="relative">
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
-            <input className="input h-8 pl-8 text-[13px]" placeholder="搜索标题、正文和标签" maxLength={100} value={filter} onChange={(e) => setFilter(e.target.value)} />
+            <input className="input h-8 pl-8 text-[13px]" aria-label="筛选笔记" placeholder="搜索标题、正文和标签" maxLength={100} value={filter} onChange={(e) => setFilter(e.target.value)} />
           </div>
           {tags.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-3">
@@ -265,13 +271,13 @@ function Notes() {
           {!notePage && !listError && <p className="p-3 text-[13px] text-muted">正在载入笔记…</p>}
           {listError && <p role="alert" className="p-3 text-[13px] text-warn">{(listError as Error).message} <button className="underline" onClick={() => mutateList()}>重试</button></p>}
           {shown.map((n) => (
-            <button key={n.id} onClick={() => setParam("id", n.id)}
-              className={`w-full text-left px-3 py-2.5 rounded-xl mb-0.5 transition-colors ${noteId === n.id ? "bg-hover" : "row-hover"}`}>
+            <button key={n.id} onClick={() => setParam("id", n.id)} aria-current={noteId === n.id ? "true" : undefined}
+              className={`w-full text-left px-3 py-3 rounded-xl mb-1 transition-colors ${noteId === n.id ? "bg-accent-soft" : "row-hover"}`}>
               <span className="flex items-center gap-2">
                 {!courseId && <Dot color={courseMap[n.course_id]?.color} size={7} />}
                 <span className="text-[14px] font-medium truncate flex-1">{n.title}</span>
               </span>
-              <span className="block text-[12.5px] text-muted line-clamp-2 mt-1 leading-relaxed">{n.excerpt || "空白笔记"}</span>
+              <span className="text-[12.5px] text-muted line-clamp-2 mt-1 leading-relaxed">{n.excerpt || "空白笔记"}</span>
               <span className="flex items-center gap-2 mt-1.5 text-[11.5px] text-faint">
                 {relTime(n.updated_at)}
                 {n.card_count > 0 && <span className="flex items-center gap-0.5"><Layers size={11} />{n.card_count}</span>}
@@ -300,10 +306,10 @@ function Notes() {
         </div>
       </section>
 
-      <section className="flex-1 min-w-0">
+      <section className="note-detail flex-1 min-w-0">
         {noteId ? (
           <Editor key={noteId} id={noteId} courses={courses || []} known={known} titles={titles} fresh={fresh === noteId}
-            startEdit={params.get("edit") === "1"}
+            startEdit={params.get("edit") === "1"} listHidden={listHidden} onToggleList={() => setListHidden((v) => !v)}
             onChanged={() => { mutateList(); mutateAll(); globalMutate("/api/courses"); }}
             onDeleted={() => { setParam("id", null); mutateList(); mutateAll(); globalMutate("/api/courses"); }} />
         ) : (
@@ -319,8 +325,9 @@ function Notes() {
               </> : <p className="text-[14px] text-muted">{wikiError || `正在打开「${wiki}」…`}</p>}
               {wikiSource && <Link href={`/notes?id=${wikiSource}`} className="btn mt-4">返回来源笔记</Link>}
             </div> : (
-              <Empty icon={<BookOpen size={28} strokeWidth={1.5} />} title="选择一篇笔记，或新建一篇">
-                笔记支持 Markdown、LaTeX 公式（$…$）和代码块；输入 [[ 可以链接到另一篇笔记。按 ⌘K 可以全局搜索。
+              <Empty icon={<BookOpen size={28} strokeWidth={1.5} />} title={notes?.length ? "选择一篇笔记" : "还没有笔记"}>
+                {notes?.length ? "从左侧列表打开，继续阅读或编辑。" : "先建一门学科，再写下第一篇笔记。"}
+                <div><button className="btn btn-primary mt-5" onClick={create}><Plus size={14} />新建笔记</button></div>
               </Empty>
             )}
           </div>
@@ -333,6 +340,7 @@ function Notes() {
           setOutlining(false); globalMutate(isNoteListCacheKey); globalMutate("/api/courses");
           router.replace(`/notes?id=${note.id}`);
         }} />
+      <CourseDialog open={creatingCourse} onClose={() => setCreatingCourse(false)} onSaved={(c) => { mutateCourses(); createInCourse(c.id); }} />
       {course && <CourseDialog open={editCourse} onClose={() => setEditCourse(false)} course={course} onSaved={() => mutateCourses()} />}
     </div>
   );
@@ -368,9 +376,10 @@ function Menu({ items, label = "更多" }: { items: MenuItem[]; label?: string }
 
 type Mode = "read" | "split" | "edit";
 
-function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDeleted }: {
+function Editor({ id, courses, known, titles, fresh, startEdit, listHidden, onToggleList, onChanged, onDeleted }: {
   id: string; courses: Course[]; known: Set<string>; titles: TitleOption[]; fresh: boolean; startEdit?: boolean;
   onChanged: () => void; onDeleted: () => void;
+  listHidden: boolean; onToggleList: () => void;
 }) {
   const { data: note, error: noteError, mutate } = useSWR<Note>(`/api/notes/${id}`, fetcher);
   const { data: links } = useSWR<NoteLinks>(`/api/notes/${id}/links`, fetcher);
@@ -379,6 +388,8 @@ function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDel
   const [saveView, setSaveView] = useState<SaveSnapshot<Note> | null>(null);
   const [showConflict, setShowConflict] = useState(false);
   const [showDrafts, setShowDrafts] = useState(false);
+  const paperRef = useRef<HTMLDivElement>(null);
+  const [cardSource, setCardSource] = useState<CardSource | null>(null);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [tags, setTags] = useState<string[]>([]);
@@ -466,6 +477,7 @@ function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDel
   // ⌘E：阅读 ⇄ 编辑
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || document.querySelector('[role="dialog"]')) return;
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "e") {
         e.preventDefault();
         const next = mode === "read" ? lastEdit.current : "read";
@@ -510,30 +522,45 @@ function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDel
   const busy = ai.state.running;
   const colors = Object.fromEntries(courses.map((c) => [c.id, c.color]));
   const linksPanel = <LinksPanel noteId={id} links={links} title={title} colors={colors} />;
+  const createCard = async () => {
+    const selection = window.getSelection();
+    const rendered = selection && paperRef.current?.contains(selection.anchorNode) && paperRef.current?.contains(selection.focusNode) ? selection.toString() : "";
+    const selected = (rendered || editorRef.current?.selectedText() || "").trim();
+    if (selected.length > 2000) { toast("选中文字超过 2000 字，请缩小选区", "bad"); return; }
+    if (!(await save())) { toast("请先同步笔记或解决版本冲突，再制作卡片", "bad"); return; }
+    const saved = saver.current?.getSnapshot().fields;
+    setCardSource({ id, title: saved?.title || title, course_id: saved?.course_id || note.course_id, selection: selected });
+  };
+  const sourcesPanel = note.sources.length > 0 && <details className="source-links">
+    <summary>{note.sources.length} 处资料来源</summary>
+    {note.sources.map((source) => source.available ? <Link key={source.ord} href={`/materials/view?id=${source.material_id}${source.unit_id ? `&unit=${source.unit_id}` : ""}`}><FileUp size={12} /><span className="truncate">{source.material_name} · {source.label}</span></Link> : <p className="px-3 py-2 text-muted" key={source.ord}>{source.material_name} · 原件已删除</p>)}
+  </details>;
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center gap-2 h-14 px-6 border-b border-rule shrink-0">
-        <select className="h-8 rounded-lg bg-transparent text-[13px] text-muted pr-1 outline-none hover:bg-hover"
+    <div ref={paperRef} className="h-full flex flex-col">
+      <div className="note-toolbar flex items-center gap-2 min-h-14 py-2 px-4 border-b border-rule shrink-0 flex-wrap">
+        <button className="btn btn-icon text-muted" onClick={onToggleList} aria-label={listHidden ? "展开笔记列表" : "收起笔记列表"} title={listHidden ? "展开笔记列表" : "收起笔记列表"}>
+          {listHidden ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+        </button>
+        <select className="h-8 max-w-36 min-w-0 truncate rounded-lg bg-transparent text-[13px] text-muted pr-1 outline-none hover:bg-hover"
           value={saveView?.fields.course_id || note.course_id} aria-label="所属学科"
           onChange={async (e) => { const course = e.target.value; if (await save({ course_id: course })) router.replace(`/notes?id=${id}&course=${course}`); }}>
           {courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <span className="flex-1" />
         <div className="seg">
-          <button data-on={mode === "read"} onClick={() => changeMode("read")} title="⌘E 切换阅读 / 编辑">阅读</button>
+          <button data-on={mode === "read"} onClick={() => changeMode("read")}>阅读</button>
           <button data-on={mode === "split"} onClick={() => changeMode("split")}>分栏</button>
           <button data-on={mode === "edit"} onClick={() => changeMode("edit")}>编辑</button>
         </div>
         <div className="w-px h-5 bg-rule mx-1" />
-        <button className="btn" disabled={busy} onClick={() => runTask("organize")}><Sparkles size={14} className="text-accent" />整理</button>
-        <Dropdown label="总结" disabled={busy} options={[
-          { label: "约 100 字", onClick: () => runTask("summarize", { length: 100 }) },
-          { label: "约 300 字", onClick: () => runTask("summarize", { length: 300 }) },
+        <button className="btn" onMouseDown={(e) => e.preventDefault()} onClick={createCard} title="将选中的文字制成复习卡；未选择时可手动填写"><Layers size={14} />制卡</button>
+        <Dropdown label="AI 辅助" disabled={busy} options={[
+          { label: "整理笔记", onClick: () => runTask("organize") },
+          { label: "简短摘要 · 约 100 字", onClick: () => runTask("summarize", { length: 100 }) },
+          { label: "详细摘要 · 约 300 字", onClick: () => runTask("summarize", { length: 300 }) },
+          ...[5, 10, 15, 20].map((n) => ({ label: `提炼 ${n} 个知识点`, onClick: () => runTask("extract", { count: n }) })),
         ]} />
-        <Dropdown label="提炼知识点" disabled={busy} options={[5, 10, 15, 20].map((n) => ({
-          label: `${n} 个`, onClick: () => runTask("extract", { count: n }),
-        }))} />
         <Menu items={[
           { label: "修订历史", icon: History, onClick: () => setHistory(true) },
           { label: "导出 .md", icon: Download, onClick: () => download(`/api/notes/${id}/export.md`, {}, `${title}.md`) },
@@ -550,28 +577,30 @@ function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDel
         </div>
       )}
 
-      <div className="flex-1 min-h-0 flex">
+      <div className={`note-panes flex-1 min-h-0 flex ${mode === "split" ? "note-panes-split" : ""}`}>
         {mode !== "read" && (
           <div className={`${mode === "split" ? "w-1/2 border-r border-rule" : "w-full"} overflow-y-auto`}>
-            <div className="max-w-[760px] mx-auto px-10 py-8">
+            <div className="note-paper max-w-[800px] mx-auto px-10 py-8">
               <TitleAndTags title={title} setTitle={editTitle} tags={tags} tagInput={tagInput}
                 setTagInput={setTagInput} commitTags={commitTags} fresh={fresh} onEnter={() => editorRef.current?.focus()} />
+              {sourcesPanel}
               <MarkdownEditor ref={editorRef} value={content} onChange={editContent} readOnly={busy} titles={titles.filter((t) => t.id !== id)}
                 onSave={() => save()}
-                placeholder={"用 Markdown 写笔记。\n\n## 小标题\n- 列表（回车自动续写，Tab 缩进）\n公式：$E = mc^2$\n输入 [[ 链接到另一篇笔记\n\n```c\nint main() {}\n```"} />
+                placeholder="开始写笔记…" />
               {mode === "edit" && linksPanel}
             </div>
           </div>
         )}
         {mode !== "edit" && (
           <div className={`${mode === "split" ? "w-1/2" : "w-full"} overflow-y-auto`}>
-            <article className="max-w-[760px] mx-auto px-10 py-8">
+            <article className="note-paper max-w-[800px] mx-auto px-10 py-8">
               {mode === "read" ? (
                 <TitleAndTags title={title} setTitle={editTitle} tags={tags} tagInput={tagInput}
                   setTagInput={setTagInput} commitTags={commitTags} />
               ) : (
-                <h1 className="font-serif text-[28px] leading-tight mb-6">{title}</h1>
+                <h1 className="note-title text-[28px] leading-tight mb-6">{title}</h1>
               )}
+              {mode === "read" && sourcesPanel}
               {content.trim() ? (
                 <div onDoubleClick={() => mode === "read" && changeMode("edit")}><Markdown text={content} known={known} noteId={id} links={links?.outgoing} /></div>
               ) : (
@@ -597,7 +626,7 @@ function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDel
         <span className="tabular-nums">{chars} 字</span>
         {links && links.backlinks.length > 0 && <span className="flex items-center gap-1"><Link2 size={11} />{links.backlinks.length} 篇笔记链接到这里</span>}
         <span className="flex-1" />
-        <span className="hidden lg:inline">⌘E 阅读/编辑 · ⌘B 加粗 · [[ 链接笔记</span>
+        <span className="note-shortcuts hidden xl:inline"><ModifierKey /> E 编辑 · [[ 链接</span>
         {busy && <span className="text-accent">AI 生成期间编辑区只读</span>}
       </div>
 
@@ -628,6 +657,7 @@ function Editor({ id, courses, known, titles, fresh, startEdit, onChanged, onDel
           }} />)}
         </div>
       </Modal>
+      <CardEditor card={cardSource ? {} : null} source={cardSource || undefined} courses={courses} onClose={() => setCardSource(null)} onSaved={() => { mutate(); onChanged(); }} />
     </div>
   );
 }
@@ -644,7 +674,7 @@ function TitleAndTags({ title, setTitle, tags, tagInput, setTagInput, commitTags
     <div className="mb-7">
       <input ref={ref} value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} aria-label="标题"
         onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && onEnter) { e.preventDefault(); onEnter(); } }}
-        className="w-full bg-transparent outline-none font-serif text-[30px] leading-tight placeholder:text-faint" placeholder="标题" />
+        className="note-title w-full bg-transparent outline-none text-[30px] leading-tight placeholder:text-faint" placeholder="标题" />
       <div className="flex flex-wrap items-center gap-1.5 mt-3">
         {tags.map((t) => (
           <span key={t} className="chip group">
@@ -680,7 +710,7 @@ function Dropdown({ label, options, disabled }: { label: string; options: { labe
     <div className="relative" ref={ref}>
       <button className="btn" disabled={disabled} onClick={() => setOpen((v) => !v)}>{label}<ChevronDown size={13} className="text-muted" /></button>
       {open && (
-        <div className="anim-sheet absolute right-0 top-9 z-30 w-32 p-1 rounded-xl bg-paper border border-rule shadow-xl">
+        <div className="anim-sheet absolute right-0 top-9 z-30 w-48 p-1 rounded-xl bg-paper border border-rule shadow-xl">
           {options.map((o) => (
             <button key={o.label} onClick={() => { setOpen(false); o.onClick(); }} className="w-full text-left h-8 px-2.5 rounded-lg text-[13px] row-hover">{o.label}</button>
           ))}
@@ -873,7 +903,7 @@ function LinksPanel({ noteId, links, title, colors }: { noteId: string; links?: 
             <li key={b.id}>
               <Link href={`/notes?id=${b.id}`} className="block rounded-xl border border-rule px-3.5 py-2.5 row-hover">
                 <span className="flex items-center gap-2 text-[13.5px] font-medium"><Dot color={colors[b.course_id]} size={7} />{b.title}</span>
-                {b.snippet && <span className="block text-[12.5px] text-muted mt-1 leading-relaxed line-clamp-2">{clean(b.snippet)}</span>}
+                {b.snippet && <span className="text-[12.5px] text-muted mt-1 leading-relaxed line-clamp-2">{clean(b.snippet)}</span>}
               </Link>
             </li>
           ))}

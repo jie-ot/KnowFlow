@@ -4,19 +4,7 @@ import io
 import json
 import zipfile
 
-import pytest
-from fastapi.testclient import TestClient
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    from app import config
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
-    monkeypatch.setattr(config, "MATERIALS_DIR", tmp_path / "materials")
-    from app.main import app
-    with TestClient(app) as c:
-        yield c
+from tests.test_core import client  # noqa: F401  显式加载测试示例数据
 
 
 def test_focus(client):

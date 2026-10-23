@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -14,6 +15,7 @@ from app.db import connect, new_id, now_iso
 from app.errors import AppError
 from app.logic.extract import ExtractResult, Unit
 from app.routers import materials
+from app.seed import seed
 
 
 @pytest.fixture()
@@ -25,6 +27,8 @@ def client(tmp_path, monkeypatch):
     config.MATERIALS_DIR.mkdir()
     from app.main import app
     with TestClient(app) as test_client:
+        with closing(connect()) as conn:
+            seed(conn)
         yield test_client
 
 

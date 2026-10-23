@@ -40,6 +40,14 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "MATERIALS_DIR", tmp_path / "materials")
     from app.main import app
     with TestClient(app) as c:
+        # 示例内容只用于测试；正式启动保持空工作区。
+        from app.db import connect
+        from app.seed import seed
+        conn = connect()
+        try:
+            seed(conn)
+        finally:
+            conn.close()
         yield c
 
 

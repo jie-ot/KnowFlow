@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.llm import gateway
+from app.db import connect
+from app.seed import seed
 from app.llm.gateway import LLMError
 from app.routers.ai import _parse_compose, _parse_extract, _parse_plan
 
@@ -21,6 +24,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "MATERIALS_DIR", tmp_path / "materials")
     from app.main import app
     with TestClient(app) as client:
+        with closing(connect()) as conn:
+            seed(conn)
         cfg = client.post("/api/ai/configs", json={"base_url": "https://mock.example.com", "api_key": "test-only",
                                                     "model": "mock"}).json()
         client.post(f"/api/ai/configs/{cfg['id']}/consent")

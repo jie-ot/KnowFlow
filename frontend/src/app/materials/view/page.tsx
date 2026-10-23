@@ -1,17 +1,18 @@
 "use client";
 
-import { ArrowLeft, ExternalLink, Pencil, RotateCcw, Sparkles, Trash2 } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronDown, ChevronUp, ExternalLink, Pencil, Quote, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
 import { API, api, ApiError, Course, fetcher, Material, Note, Unit } from "@/lib/api";
 import { sizeLabel } from "@/lib/format";
+import { isNoteListCacheKey } from "@/lib/note-list-cache";
 import { useAiTask } from "@/components/ai";
 import { AiProgress, AiStatusLine, useStopGuard, Warnings } from "@/components/AiSheets";
 import { StatusPill } from "@/components/MaterialBits";
 import { Markdown } from "@/components/Markdown";
-import { Modal, useConfirm, useToast } from "@/components/ui";
+import { Empty, Modal, Spinner, useConfirm, useToast } from "@/components/ui";
 
 export default function MaterialPage() {
   return (
@@ -25,7 +26,7 @@ function MaterialDetail() {
   const params = useSearchParams();
   const id = params.get("id") || "";
   const focus = params.get("unit");
-  const { data: m, mutate } = useSWR<Material>(`/api/materials/${id}`, (p: string) => api<Material>(p), {
+  const { data: m, error, mutate } = useSWR<Material>(id ? `/api/materials/${id}` : null, (p: string) => api<Material>(p), {
     refreshInterval: (d) => (d && (d.status === "extracting" || d.status === "uploaded") ? 1000 : 0),
   });
   const { data: ai } = useSWR<{ max_input_chars: number }>("/api/ai/status", fetcher);
@@ -33,22 +34,40 @@ function MaterialDetail() {
   const [lastClicked, setLastClicked] = useState<number | null>(null);
   const [composing, setComposing] = useState(false);
   const [editingUnit, setEditingUnit] = useState<Unit | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [excerptOpen, setExcerptOpen] = useState(false);
+  const [excerptTitle, setExcerptTitle] = useState("");
+  const [savingExcerpt, setSavingExcerpt] = useState(false);
+  const savingRef = useRef(false);
   const toast = useToast();
   const confirm = useConfirm();
   const router = useRouter();
-  const scrolled = useRef(false);
+  const scrolled = useRef("");
 
   useEffect(() => {
-    if (focus && m?.units && !scrolled.current) {
-      scrolled.current = true;
-      setTimeout(() => document.getElementById(`u-${focus}`)?.scrollIntoView({ block: "center" }), 60);
+    if (focus && m?.units && scrolled.current !== `${m.id}:${focus}`) {
+      const target = document.getElementById(`u-${focus}`);
+      if (target) { target.scrollIntoView({ block: "start" }); scrolled.current = `${m.id}:${focus}`; }
     }
   }, [focus, m]);
 
-  if (!m) return <div className="p-10 text-muted text-[14px]">正在打开…</div>;
+  if (!id || error) return <Empty icon={<BookOpen size={24} />} title={id ? "暂时无法打开资料" : "请选择一份资料"}><Link className="btn btn-outline mt-3" href="/materials">返回资料库</Link></Empty>;
+  if (!m) return <div className="p-10 text-muted text-[14px]" role="status"><Spinner /> 正在打开…</div>;
   const units = m.units || [];
   const chars = units.filter((u) => picked.has(u.id)).reduce((s, u) => s + u.char_count, 0);
   const limit = (ai?.max_input_chars || 16000) * 4; // 资料整理会分批进行，可以一次选得比单次上限多
+  const saveExcerpt = async () => {
+    if (!excerptTitle.trim() || savingRef.current) return;
+    savingRef.current = true; setSavingExcerpt(true);
+    try {
+      const note = await api<Note>(`/api/materials/${id}/excerpt`, { method: "POST", json: { title: excerptTitle.trim(), unit_ids: [...picked] } });
+      globalMutate(isNoteListCacheKey); globalMutate("/api/courses");
+      toast("摘录已保存，出处已保留");
+      setExcerptOpen(false);
+      router.push(`/notes?id=${note.id}`);
+    } catch (e) { toast((e as Error).message, "bad"); }
+    finally { savingRef.current = false; setSavingExcerpt(false); }
+  };
 
   const toggle = (u: Unit, i: number, shift: boolean) => {
     setPicked((s) => {
@@ -76,9 +95,9 @@ function MaterialDetail() {
   };
 
   return (
-    <div className="max-w-[920px] mx-auto px-10 py-10 pb-32">
+    <div className="desktop-page !pb-32">
       <Link href="/materials" className="inline-flex items-center gap-1 text-[13px] text-muted hover:text-ink mb-5"><ArrowLeft size={14} />资料</Link>
-      <div className="flex items-start gap-4 mb-2">
+      <div className="flex items-start gap-3 mb-2 flex-wrap">
         <h1 className="flex-1 text-[24px] font-semibold tracking-tight">{m.display_title}</h1>
         <a className="btn btn-outline" href={`${API}/api/materials/${id}/file`} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开原件</a>
         {m.status === "failed" && <button className="btn btn-outline" onClick={async () => { await api(`/api/materials/${id}/retry`, { method: "POST" }); mutate(); }}><RotateCcw size={14} />重新解析</button>}
@@ -95,35 +114,41 @@ function MaterialDetail() {
         </p>
       )}
 
-      <div className="flex items-center gap-3 mt-8 mb-3">
-        <p className="section-title mb-0 flex-1">内容片段（勾选后让 AI 整理，按住 Shift 可连选）</p>
+      <div className="flex items-center gap-3 mt-8 mb-4">
+        <p className="section-title !mb-0 flex-1">原文</p>
         <button className="btn text-muted" onClick={() => setPicked(new Set(units.filter((u) => u.text.trim()).map((u) => u.id)))}>全选</button>
         {picked.size > 0 && <button className="btn text-muted" onClick={() => setPicked(new Set())}>清除</button>}
       </div>
 
-      <div className="space-y-2">
+      <div className="reader-layout">
+      <div className="space-y-4">
         {units.map((u, i) => {
           const on = picked.has(u.id);
           return (
             <div key={u.id} id={`u-${u.id}`}
-              className="group flex gap-4 rounded-xl px-4 py-3 border transition-colors"
+              className="material-unit group flex gap-4 px-5 py-5 border transition-colors"
               style={{
                 borderColor: on ? "var(--accent)" : focus === u.id ? "var(--warn)" : "var(--rule)",
                 background: on ? "var(--accent-soft)" : focus === u.id ? "var(--warn-soft)" : "transparent",
               }}>
-              <input type="checkbox" className="mt-1 accent-[var(--accent)]" checked={on} disabled={!u.text.trim()}
+              <input type="checkbox" className="mt-1.5 h-4 w-4 self-start shrink-0 accent-[var(--accent)]" checked={on} disabled={!u.text.trim()}
                 aria-label={`选择${u.label}`} onChange={() => {}} onClick={(e) => toggle(u, i, e.shiftKey)} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-[12px] font-medium text-muted">{u.label}</span>
                   <span className="text-[11px] text-faint">{u.char_count} 字</span>
                   <span className="flex-1" />
-                  <button className="opacity-0 group-hover:opacity-100 text-[12px] text-muted hover:text-ink flex items-center gap-1" onClick={() => setEditingUnit(u)}>
+                  <button className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-[12px] text-muted hover:text-ink flex items-center gap-1" onClick={() => setEditingUnit(u)}>
                     <Pencil size={11} />{u.text.trim() ? "校对" : "补充文字"}
                   </button>
                 </div>
                 {u.text.trim() ? (
-                  <p className={`text-[13.5px] leading-relaxed whitespace-pre-wrap ${m.format === "code" ? "font-mono text-[12.5px]" : ""} line-clamp-[12]`}>{u.text}</p>
+                  <div>
+                    <p className={`material-text whitespace-pre-wrap ${m.format === "code" ? "font-mono !text-[13px]" : ""}`}>{u.text.length > 600 && !expanded.has(u.id) ? u.text.slice(0, 600) + "…" : u.text}</p>
+                    {u.text.length > 600 && <button className="inline-flex items-center gap-1 mt-3 text-[12px] text-accent" aria-expanded={expanded.has(u.id)} onClick={() => setExpanded((previous) => { const next = new Set(previous); if (next.has(u.id)) next.delete(u.id); else next.add(u.id); return next; })}>
+                      {expanded.has(u.id) ? <><ChevronUp size={13} />收起</> : <><ChevronDown size={13} />展开全文</>}
+                    </button>}
+                  </div>
                 ) : (
                   <p className="text-[13px] text-faint">{u.warning_text.join("；") || "没有文字"}</p>
                 )}
@@ -133,18 +158,33 @@ function MaterialDetail() {
           );
         })}
       </div>
+      {units.length > 1 && <aside className="reader-outline" aria-label="原文位置">
+        <p className="text-[12px] font-medium text-muted px-3 mb-2">原文位置</p>
+        {units.map((u) => <a key={u.id} href={`#u-${u.id}`}>{u.label}{picked.has(u.id) && <span className="text-accent ml-2">·</span>}</a>)}
+      </aside>}
+      </div>
 
       {picked.size > 0 && (
-        <div className="anim-sheet fixed bottom-6 left-[calc(50%+116px)] -translate-x-1/2 z-20 flex items-center gap-4 pl-5 pr-2 h-14 rounded-2xl bg-paper border border-rule shadow-2xl">
-          <span className="text-[13.5px]">已选 {picked.size} 段，共 <b className={chars > limit ? "text-bad" : ""}>{chars.toLocaleString()}</b> 字</span>
-          {chars > limit && <span className="text-[12px] text-bad">超过 {limit} 字上限，请少选一些</span>}
-          <button className="btn btn-primary h-10 px-4" disabled={chars > limit} onClick={() => setComposing(true)}><Sparkles size={14} />整理成笔记</button>
+        <div className="selection-dock anim-sheet"><div className="glass-surface">
+          <span className="text-[13px]">已选 {picked.size} 段 <span className="text-muted">· {chars.toLocaleString()} 字</span></span>
+          {chars > limit && <span className="text-[12px] text-bad">AI 整理限 {limit} 字</span>}
+          <button className="btn btn-outline" onClick={() => { setExcerptTitle((m.display_title + " · 摘录").slice(0, 100)); setExcerptOpen(true); }}><Quote size={14} />保存摘录</button>
+          <button className="btn btn-primary" disabled={chars > limit} onClick={() => setComposing(true)}><Sparkles size={14} />AI 整理</button>
+        </div>
         </div>
       )}
 
       <ComposeSheet open={composing} unitIds={[...picked]} defaultCourse={m?.course_id} onClose={() => setComposing(false)}
         onSaved={(note) => { setComposing(false); toast("已保存为笔记"); globalMutate("/api/courses"); router.push(`/notes?id=${note.id}`); }} />
       <UnitEditor unit={editingUnit} materialId={id} onClose={() => setEditingUnit(null)} onSaved={() => mutate()} />
+      <Modal open={excerptOpen} onClose={() => { if (!savingExcerpt) setExcerptOpen(false); }} title="保存摘录" width={520}
+        footer={<><button className="btn btn-outline" disabled={savingExcerpt} onClick={() => setExcerptOpen(false)}>取消</button><button className="btn btn-primary" disabled={savingExcerpt || !excerptTitle.trim()} onClick={saveExcerpt}>{savingExcerpt ? <Spinner /> : <BookOpen size={14} />}保存到笔记</button></>}>
+        <div className="p-5 space-y-5">
+          <div><label className="label" htmlFor="excerpt-title">笔记标题</label><input id="excerpt-title" className="input" maxLength={100} value={excerptTitle} onChange={(e) => setExcerptTitle(e.target.value)} /></div>
+          <div className="text-[12px] text-muted">{m.display_title} · {picked.size} 段原文，保留出处</div>
+          <div className="max-h-64 overflow-y-auto space-y-3">{units.filter((u) => picked.has(u.id)).map((u) => <blockquote key={u.id} className="border-l-2 border-accent pl-3 text-[13px] leading-relaxed"><p className="text-muted text-[11px] mb-1">{u.label}</p>{u.text.slice(0, 160)}{u.text.length > 160 && "…"}</blockquote>)}</div>
+        </div>
+      </Modal>
     </div>
   );
 }
@@ -225,7 +265,7 @@ function ComposeSheet({ open, unitIds, defaultCourse, onClose, onSaved }: {
           {result && (
             <>
               <Warnings items={ai.state.draft!.warnings} />
-              <input className="w-full bg-transparent outline-none font-serif text-[26px]" value={title} onChange={(e) => setTitle(e.target.value)} aria-label="笔记标题" />
+              <input className="note-title w-full bg-transparent outline-none text-[26px]" value={title} onChange={(e) => setTitle(e.target.value)} aria-label="笔记标题" />
               <label className="flex items-center gap-2 text-[13px] text-muted">
                 保存到学科
                 <select className="input h-8 w-auto min-w-[180px] text-[13px]" value={courseId} onChange={(e) => setCourseId(e.target.value)}>

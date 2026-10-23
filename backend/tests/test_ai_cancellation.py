@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from contextlib import closing
 
 import httpx
 import pytest
@@ -14,6 +15,7 @@ from app.db import connect, new_id, now_iso
 from app.llm import gateway
 from app.routers import ai
 from app.services.drafts import discard_draft
+from app.seed import seed
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     from app import config
@@ -23,6 +25,8 @@ def client(tmp_path, monkeypatch):
     config.MATERIALS_DIR.mkdir()
     from app.main import app
     with TestClient(app) as test_client:
+        with closing(connect()) as conn:
+            seed(conn)
         cfg = test_client.post("/api/ai/configs", json={"base_url": "https://mock.invalid", "api_key": "mock-secret",
                                                         "model": "mock"}).json()
         test_client.post(f"/api/ai/configs/{cfg['id']}/consent")

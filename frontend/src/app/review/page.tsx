@@ -10,7 +10,8 @@ import { colorOf, intervalLabel } from "@/lib/format";
 import { refreshReviewQueue, ReviewSubmission } from "@/lib/submission";
 import { Markdown } from "@/components/Markdown";
 import { WeakStudySheet } from "@/components/WeakStudySheet";
-import { Dot, Empty, Modal, PageHeader, useConfirm, useToast } from "@/components/ui";
+import { CardEditor } from "@/components/CardEditor";
+import { Dot, Empty, PageHeader, useConfirm, useToast } from "@/components/ui";
 
 export default function ReviewPage() {
   return (
@@ -23,21 +24,22 @@ export default function ReviewPage() {
 function Review() {
   const params = useSearchParams();
   const router = useRouter();
+  const [sessionId, setSessionId] = useState(0);
   const tab = params.get("tab") === "cards" ? "cards" : "review";
   const setTab = (t: string) => {
+    if (t === "review") setSessionId((id) => id + 1);
     const p = new URLSearchParams(params.toString());
     p.set("tab", t);
     router.replace(`/review?${p.toString()}`);
   };
   return (
-    <div className="max-w-[880px] mx-auto px-10 py-12">
+    <div className="desktop-page review-page !max-w-[1040px]">
       <PageHeader title={tab === "review" ? "复习" : "卡片库"}
-        sub={tab === "review" ? "按 SM-2 间隔安排：记得越牢，下次出现得越晚。" : "所有知识点卡片，包括还没到期的。"}
         actions={<div className="seg">
           <button data-on={tab === "review"} onClick={() => setTab("review")}>今日复习</button>
           <button data-on={tab === "cards"} onClick={() => setTab("cards")}>卡片库</button>
         </div>} />
-      {tab === "review" ? <Session key={params.get("course") || "all"} courseId={params.get("course")} /> : <Library noteId={params.get("note")} weakQuery={params.get("weak") === "1"} learnId={params.get("learn")} />}
+      {tab === "review" ? <Session key={`${params.get("course") || "all"}:${sessionId}`} courseId={params.get("course")} /> : <Library noteId={params.get("note")} weakQuery={params.get("weak") === "1"} learnId={params.get("learn")} />}
     </div>
   );
 }
@@ -46,8 +48,10 @@ type Queue = { today: string; items: Card[]; reviewed_today: number; next_due: s
 
 function Session({ courseId }: { courseId: string | null }) {
   const key = `/api/review/queue${courseId ? `?course_id=${courseId}` : ""}`;
-  const { data, mutate } = useSWR<Queue>(key, fetcher, { revalidateOnFocus: false });
   const [queue, setQueue] = useState<Card[] | null>(null);
+  const [data, setData] = useState<Queue | null>(null);
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [index, setIndex] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [done, setDone] = useState(0);
@@ -58,8 +62,16 @@ function Session({ courseId }: { courseId: string | null }) {
   const toast = useToast();
 
   useEffect(() => {
-    if (data && queue === null) setQueue(data.items);
-  }, [data, queue]);
+    let active = true;
+    setQueue(null);
+    setError(false);
+    // 复习是一轮独立会话，进入时读取数据库中的最新队列。
+    api<Queue>(key).then((fresh) => {
+      if (!active) return;
+      setData(fresh); setQueue(fresh.items); setIndex(0); setDone(0); setFlipped(false);
+    }).catch(() => { if (active) setError(true); });
+    return () => { active = false; };
+  }, [key, attempt]);
 
   const card = queue?.[index];
   const grade = useCallback(async (g: "forgot" | "hard" | "good") => {
@@ -82,7 +94,7 @@ function Session({ courseId }: { courseId: string | null }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.repeat || submitting || editing || (e.target as HTMLElement).tagName.match(/INPUT|TEXTAREA|SELECT/)) return;
+      if (e.defaultPrevented || submitting || e.repeat || e.isComposing || editing || document.querySelector('[role="dialog"][aria-modal="true"]') || (e.target as HTMLElement).tagName.match(/INPUT|TEXTAREA|SELECT/)) return;
       if (e.key === " ") { e.preventDefault(); setFlipped((f) => !f); }
       if (flipped && e.key === "1") grade("forgot");
       if (flipped && e.key === "2") grade("hard");
@@ -92,7 +104,8 @@ function Session({ courseId }: { courseId: string | null }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [flipped, grade, editing, submitting]);
 
-  if (!data || queue === null) return null;
+  if (error && queue === null) return <Empty title="复习卡片加载失败"><button className="btn btn-outline mt-3" onClick={() => setAttempt((n) => n + 1)}>重试</button></Empty>;
+  if (!data || queue === null) return <p className="py-12 text-center text-muted text-[14px]" role="status">正在加载复习卡片…</p>;
   const total = queue.length;
 
   if (!card) {
@@ -101,7 +114,7 @@ function Session({ courseId }: { courseId: string | null }) {
         <div className="card-stack w-full max-w-[460px]">
           <div className="index-card px-8 pt-12 pb-9 text-center" style={{ "--course": "var(--accent)" } as React.CSSProperties}>
             <div className="w-11 h-11 mx-auto rounded-full grid place-items-center bg-accent-soft text-accent mb-4"><Check size={22} /></div>
-            <p className="font-serif text-[24px]">{done ? `这一轮复习了 ${done} 张` : "今天没有要复习的卡片"}</p>
+            <p className="text-[24px] font-semibold tracking-tight">{done ? `这一轮复习了 ${done} 张` : "今天没有要复习的卡片"}</p>
             <p className="text-[14px] text-muted mt-2">
               {data.next_due ? `下一批卡片在 ${data.next_due} 到期。` : "从笔记里提炼知识点，就会有新卡片。"}
             </p>
@@ -109,10 +122,10 @@ function Session({ courseId }: { courseId: string | null }) {
               <Link href="/" className="btn btn-outline">回到今天</Link>
               {done > 0 && <button className="btn" disabled={submitting} onClick={async () => {
                 setSubmitting(true);
-                try { await refreshReviewQueue(() => mutate(), (fresh) => { setQueue(fresh.items); setIndex(0); setDone(0); setFlipped(false); }); }
+                try { await refreshReviewQueue(() => api<Queue>(key), (fresh) => { setData(fresh); setQueue(fresh.items); setIndex(0); setDone(0); setFlipped(false); }); }
                 catch (error) { toast((error as Error).message, "bad"); }
                 finally { setSubmitting(false); }
-              }}>{submitting ? "更新队列中…" : "再看一遍还有没有"}</button>}
+              }}>{submitting ? "更新队列中…" : "刷新待复习卡片"}</button>}
             </div>
           </div>
         </div>
@@ -136,15 +149,15 @@ function Session({ courseId }: { courseId: string | null }) {
 
       <div className="flip w-full max-w-[560px]">
         <div className="flip-inner grid" data-flipped={flipped}>
-          <button onClick={() => setFlipped(true)} aria-label="翻面"
+          <button onClick={() => setFlipped(true)} aria-label="翻面" aria-hidden={flipped} tabIndex={flipped ? -1 : 0}
             className="flip-face index-card [grid-area:1/1] min-h-[320px] px-10 pt-14 pb-10 flex flex-col items-center justify-center text-center"
             style={{ "--course": color } as React.CSSProperties}>
-            <div className="font-serif text-[24px] leading-snug"><Markdown text={card.front} className="!text-[24px] !leading-snug" /></div>
+            <div className="text-[24px] font-medium leading-snug"><Markdown text={card.front} className="!text-[24px] !leading-snug" /></div>
             <span className="mt-8 text-[12.5px] text-faint">点击卡片或按空格翻面</span>
           </button>
-          <div className="flip-face flip-back index-card [grid-area:1/1] min-h-[320px] px-10 pt-12 pb-8 flex flex-col"
+          <div aria-hidden={!flipped} inert={!flipped} className="flip-face flip-back index-card [grid-area:1/1] min-h-[320px] px-10 pt-12 pb-8 flex flex-col"
             style={{ "--course": color } as React.CSSProperties}>
-            <p className="font-serif text-[16px] text-muted mb-4 text-center">{card.front.replace(/\$+/g, "")}</p>
+            <p className="text-[15px] text-muted mb-4 text-center">{card.front.replace(/\$+/g, "")}</p>
             <div className="flex-1 overflow-y-auto"><Markdown text={card.back} /></div>
             <div className="flex items-center justify-between mt-6 text-[12px] text-faint">
               {card.source_note_id ? <Link href={`/notes?id=${card.source_note_id}`} className="hover:text-accent">来自《{card.note_title}》</Link> : <span>手动添加</span>}
@@ -154,10 +167,10 @@ function Session({ courseId }: { courseId: string | null }) {
         </div>
       </div>
 
-      <div className={`grid grid-cols-3 gap-3 w-full max-w-[560px] mt-8 transition-opacity ${flipped ? "" : "opacity-30 pointer-events-none"}`}>
+      <div className="review-actions grid grid-cols-3 gap-3 w-full max-w-[560px] mt-7">
         {([["forgot", "忘记", "1", "var(--bad)"], ["hard", "模糊", "2", "var(--warn)"], ["good", "记得", "3", "var(--accent)"]] as const).map(([g, label, k, c]) => (
           <button key={g} onClick={() => grade(g)} className="h-16 rounded-xl border border-rule hover:border-current transition-colors flex flex-col items-center justify-center"
-            disabled={submitting || conflict || (!!pendingGrade && pendingGrade !== g)} style={{ color: c }}>
+            disabled={!flipped || submitting || conflict || (!!pendingGrade && pendingGrade !== g)} style={{ color: c }}>
             <span className="text-[15px] font-semibold">{pendingGrade === g ? `重试：${label}` : label}</span>
             <span className="text-[11.5px] text-muted mt-0.5">{card.preview && intervalLabel(card.preview[g])}后再见 <kbd className="ml-1 px-1 rounded border border-rule text-[10px] text-faint font-sans">{k}</kbd></span>
           </button>
@@ -166,8 +179,10 @@ function Session({ courseId }: { courseId: string | null }) {
       <p role="status" className="mt-3 text-[12px] text-muted">
         {submitting ? "正在提交评分…" : conflict ? "这张卡片已在其他窗口评分。" : pendingGrade ? "上次评分尚未确认，重试会提交原评分。" : ""}
         {conflict && <button className="ml-2 text-accent" onClick={async () => {
-          const next = await mutate();
-          if (next) { submission.current.clear(card); setQueue(next.items); setIndex(0); setFlipped(false); setConflict(false); }
+          try {
+            const next = await api<Queue>(key);
+            submission.current.clear(card); setData(next); setQueue(next.items); setIndex(0); setFlipped(false); setConflict(false);
+          } catch (error) { toast((error as Error).message, "bad"); }
         }}>更新复习队列</button>}
       </p>
       <CardEditor card={editing} onClose={() => setEditing(null)} onSaved={(c) => setQueue((q) => q!.map((x) => (x.id === c.id ? { ...x, ...c } : x)))} />
@@ -202,7 +217,7 @@ function Library({ noteId, weakQuery, learnId }: { noteId: string | null; weakQu
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-4">
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
         <select className="input h-8 w-auto text-[13px]" value={course} onChange={(e) => setCourse(e.target.value)} aria-label="学科">
           <option value="">全部学科</option>
           {courses?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -221,6 +236,7 @@ function Library({ noteId, weakQuery, learnId }: { noteId: string | null; weakQu
             <div className="flex-1 min-w-0">
               <p className="text-[14px] font-medium">{c.front}</p>
               <p className="text-[12.5px] text-muted line-clamp-1 mt-0.5">{c.back}</p>
+              {c.source_note_id && <Link href={`/notes?id=${c.source_note_id}`} className="inline-flex mt-1.5 text-[12px] text-accent">查看来源笔记</Link>}
             </div>
             <div className="text-right text-[12px] text-muted shrink-0 tabular-nums">
               <p>{c.due}</p>
@@ -248,57 +264,5 @@ function Library({ noteId, weakQuery, learnId }: { noteId: string | null; weakQu
           }
         }} />}
     </div>
-  );
-}
-
-function CardEditor({ card, courses, onClose, onSaved }: {
-  card: Card | null; courses?: Course[]; onClose: () => void; onSaved: (c: Card) => void;
-}) {
-  const [front, setFront] = useState("");
-  const [back, setBack] = useState("");
-  const [course, setCourse] = useState("");
-  const toast = useToast();
-  const isNew = card !== null && !card.id;
-  useEffect(() => {
-    if (card) {
-      setFront(card.front || "");
-      setBack(card.back || "");
-      setCourse(card.course_id || courses?.[0]?.id || "");
-    }
-  }, [card, courses]);
-  const save = async () => {
-    try {
-      const c = isNew
-        ? await api<Card>("/api/cards", { method: "POST", json: { course_id: course, front, back } })
-        : await api<Card>(`/api/cards/${card!.id}`, { method: "PATCH", json: { front, back } });
-      onSaved(c);
-      onClose();
-    } catch (e) {
-      toast((e as ApiError).message, "bad");
-    }
-  };
-  return (
-    <Modal open={!!card} onClose={onClose} title={isNew ? "手动建卡" : "编辑卡片"} width={520}
-      footer={<><button className="btn btn-outline" onClick={onClose}>取消</button>
-        <button className="btn btn-primary" disabled={!front.trim() || !back.trim() || (isNew && !course)} onClick={save}>保存</button></>}>
-      <div className="p-5 space-y-4">
-        {isNew && (
-          <div>
-            <label className="label" htmlFor="card-course">学科</label>
-            <select id="card-course" className="input" value={course} onChange={(e) => setCourse(e.target.value)}>
-              {courses?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
-        )}
-        <div>
-          <label className="label" htmlFor="card-front">正面：问题或关键词</label>
-          <input id="card-front" className="input font-serif" maxLength={200} value={front} onChange={(e) => setFront(e.target.value)} />
-        </div>
-        <div>
-          <label className="label" htmlFor="card-back">背面：要点（支持 Markdown 和公式）</label>
-          <textarea id="card-back" className="input" rows={5} maxLength={2000} value={back} onChange={(e) => setBack(e.target.value)} />
-        </div>
-      </div>
-    </Modal>
   );
 }

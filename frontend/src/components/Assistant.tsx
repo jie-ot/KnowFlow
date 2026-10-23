@@ -97,7 +97,7 @@ export function AssistantPanel({ open, onClose }: { open: boolean; onClose: () =
   const empty = turns.length === 0;
 
   return (
-    <aside className="anim-sheet fixed right-0 top-0 z-40 h-dvh w-[420px] max-w-[100vw] flex flex-col bg-paper border-l border-rule shadow-2xl"
+    <aside className="assistant-panel glass-surface anim-sheet fixed z-40 flex flex-col"
       onKeyDown={(e) => e.key === "Escape" && onClose()} aria-label="AI 助手">
       <header className="h-14 px-4 flex items-center gap-2 border-b border-rule shrink-0">
         <span className="w-7 h-7 rounded-lg grid place-items-center bg-accent-soft text-accent"><Sparkles size={15} /></span>
@@ -112,14 +112,14 @@ export function AssistantPanel({ open, onClose }: { open: boolean; onClose: () =
         {status && !status.configured ? (
           <div className="rounded-xl border border-rule p-4 text-[14px]">
             <p className="font-medium">还没有连接大模型</p>
-            <p className="text-muted mt-1 text-[13px] leading-relaxed">在设置里填好 DeepSeek 等服务商的 Base URL、API Key 和模型名称后，就可以在任何页面问我问题。</p>
+            <p className="text-muted mt-1 text-[13px] leading-relaxed">在设置中添加模型配置后即可提问。</p>
             <Link href="/settings" onClick={onClose} className="btn btn-primary mt-3">去设置</Link>
           </div>
         ) : empty ? (
           <div className="pt-6">
-            <p className="font-serif text-[22px] leading-snug">有什么想问的？</p>
+            <p className="text-[22px] font-semibold leading-snug">有什么想问的？</p>
             <p className="text-[13px] text-muted mt-2 leading-relaxed">
-              可以问 KnowFlow 每个功能怎么用，也可以问你自己的笔记、卡片和计划，我会去查了再回答。我只看不改。
+              可以查询笔记、卡片和计划，或询问使用方法。
             </p>
             <div className="flex flex-col items-start gap-2 mt-6">
               {suggestions(path).map((s) => (

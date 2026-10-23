@@ -220,7 +220,7 @@ function FocusPill({ session, ringing, submitting, submitError, localSaved, onPa
   const c = 2 * Math.PI * r;
   const overLimit = Math.max(1, Math.round(ms / 60000)) > MAX_FOCUS_MINUTES;
   return (
-    <div className={`fixed left-[248px] bottom-4 z-30 flex items-center gap-3 pl-2 pr-2 py-2 rounded-2xl border bg-paper shadow-xl anim-sheet
+    <div className={`glass-surface fixed left-[248px] bottom-4 z-30 flex items-center gap-3 pl-2 pr-2 py-2 rounded-2xl anim-sheet
       ${ringing ? "border-accent shadow-[0_0_0_4px_var(--accent-soft)]" : "border-rule"}`} role="timer" aria-label="番茄钟">
       <svg width="38" height="38" viewBox="0 0 38 38" className="shrink-0 -rotate-90">
         <circle cx="19" cy="19" r={r} fill="none" stroke="var(--rule)" strokeWidth="3" />
@@ -231,7 +231,7 @@ function FocusPill({ session, ringing, submitting, submitError, localSaved, onPa
         <p className="text-[11.5px] text-muted flex items-center gap-1"><Timer size={11} />{session.submission ? submitting ? "正在同步记录…" : "记录待同步" : ringing ? "时间到！" : running ? "专注中" : "已暂停"}</p>
         <p className="text-[13px] font-medium truncate">{session.title}</p>
       </div>
-      <span className="font-serif text-[22px] tabular-nums w-[68px] text-center">{ringing ? "00:00" : `${mm}:${ss}`}</span>
+      <span className="font-mono text-[22px] tabular-nums w-[68px] text-center">{ringing ? "00:00" : `${mm}:${ss}`}</span>
       {ms < 60000 && !ringing && !session.submission && (
         <span className="flex gap-0.5">
           {PRESETS.map((m) => (

@@ -57,7 +57,7 @@ export default function GuidePage() {
         </button>
         {sections.map((s) => (
           <section key={s.id} id={s.id} className="scroll-mt-8 mb-10">
-            <h2 className="font-serif text-[22px] mb-3 pb-2 border-b border-rule">{s.title}</h2>
+            <h2 className="text-[22px] font-semibold mb-3 pb-2 border-b border-rule">{s.title}</h2>
             <Markdown text={s.body.replaceAll("用户", "你")} className="text-[14.5px]" />
           </section>
         ))}

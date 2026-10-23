@@ -41,8 +41,8 @@ function PlanList() {
     router.replace(v === "calendar" ? "/plans?view=calendar" : "/plans");
   };
   return (
-    <div className={`${view === "calendar" ? "max-w-[1240px]" : "max-w-[880px]"} mx-auto px-10 py-12`}>
-      <PageHeader title="计划" sub="你定目标和时间，AI 帮你拆任务；日期和进度始终由你决定。"
+    <div className={`desktop-page ${view === "calendar" ? "!max-w-[1240px]" : ""}`}>
+      <PageHeader title="计划"
         actions={<>
           <div className="seg">
             <button data-on={view === "list"} onClick={() => changeView("list")} className="flex items-center gap-1"><List size={13} />列表</button>

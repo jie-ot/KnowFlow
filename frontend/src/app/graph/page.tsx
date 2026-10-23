@@ -348,22 +348,24 @@ function Graph() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center gap-3 h-14 px-6 border-b border-rule shrink-0">
-        <Network size={17} className="text-accent" />
-        <h1 className="text-[16px] font-semibold">知识图谱{data?.center_id ? " · 局部" : " · 全图"}</h1>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3 min-h-14 px-6 py-3 border-b border-rule shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+        <Network size={17} className="text-accent shrink-0" />
+        <h1 className="text-[16px] font-semibold whitespace-nowrap">知识图谱{data?.center_id ? " · 局部" : " · 全图"}</h1>
         {data && (
           <span className="text-[12.5px] text-muted">
             {data.nodes.length} 篇笔记 · {data.edges.length} 条链接
             {data.unresolved > 0 && <span className="text-faint"> · {data.unresolved} 个链接尚未解析{data.ambiguous > 0 ? `（${data.ambiguous} 个同名目标需到笔记中选择）` : ""}</span>}
           </span>
         )}
-        <span className="flex-1" />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 ml-auto">
         <label className="flex items-center gap-2 text-[12px] text-muted" title={relationDescriptions[newKind]}>新连线类型
           <select aria-label="新连线关系类型" className="input h-7 w-28 text-[12px]" value={newKind} onChange={(event) => setNewKind(event.target.value as RelationKind)}>
             {Object.entries(relationLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
           </select>
         </label>
-        <div className="relative w-52">
+        <div className="relative w-48 shrink-0">
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
           <input className="input h-8 pl-7 text-[13px]" placeholder="找一篇笔记" value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -382,18 +384,19 @@ function Graph() {
         <button className="btn btn-outline" onClick={runSuggest} disabled={suggesting || (data?.nodes.length || 0) < 2}>
           {suggesting ? <Spinner /> : <Sparkles size={14} className="text-accent" />}AI 推荐连线
         </button>
-        <label className="flex items-center gap-1.5 text-[12.5px] text-muted cursor-pointer select-none">
+        <label className="flex items-center gap-1.5 text-[12.5px] text-muted cursor-pointer select-none whitespace-nowrap">
           <input type="checkbox" className="accent-[var(--accent)]" checked={hideIsolated} disabled={!hasEdges}
             onChange={(e) => setHideIsolated(e.target.checked)} />
           隐藏孤立笔记
         </label>
+        </div>
       </div>
 
       <div className="flex items-center gap-3 px-6 py-2 border-b border-rule text-[12.5px] flex-wrap">
         {data?.center_id && <span className="text-muted">{`以「${noteIndex?.find((note) => note.id === data.center_id)?.title || "所选笔记"}」为中心 ${data.depth} 层，显示 ${data.nodes.length} / ${data.total_nodes} 篇；连线保留原方向。`}</span>}
         {data?.center_id && <><button className="btn h-7" disabled={data.depth === 1} onClick={() => setRange(data.center_id!, 1)}>一层</button><button className="btn h-7" disabled={data.depth === 2} onClick={() => setRange(data.center_id!, 2)}>两层</button><button className="btn h-7" onClick={() => setRange(null)}>查看全图</button></>}
         <span className="flex-1" />
-        <label className="flex items-center gap-2">局部中心
+        <label className="flex items-center gap-2 whitespace-nowrap">局部中心
           <input className="input h-7 w-40 text-[12px]" placeholder="筛选全部笔记" value={centerQuery} onChange={(event) => setCenterQuery(event.target.value)} />
           <select className="input h-7 max-w-52 text-[12px]" aria-label="选择局部图中心" value={data?.center_id || ""} onChange={(event) => { if (event.target.value) setRange(event.target.value); }}>
             <option value="">选择笔记…</option>
@@ -586,7 +589,7 @@ function Graph() {
           <aside className="w-[300px] shrink-0 border-l border-rule bg-paper overflow-y-auto anim-fade">
             <div className="p-5">
               <div className="flex items-start gap-2">
-                <h2 className="flex-1 font-serif text-[21px] leading-snug">{sel.title}</h2>
+                <h2 className="flex-1 font-semibold text-[21px] leading-snug">{sel.title}</h2>
                 <button className="btn btn-icon -mr-2 -mt-1 text-muted" onClick={() => setSelected(null)} aria-label="关闭"><X size={15} /></button>
               </div>
               <p className="flex items-center gap-3 mt-2 text-[12.5px] text-muted">

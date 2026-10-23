@@ -17,8 +17,9 @@ const GRADES = [["forgot", "忘记", "1", "var(--bad)"], ["hard", "模糊", "2",
 
 /** 在首页卡片里直接翻卡复习，和复习页用同一套 SM-2 记录 */
 export function QuickReview({ onExit }: { onExit: () => void }) {
-  const { data, mutate } = useSWR<{ items: Card[] }>("/api/review/queue", fetcher, { revalidateOnFocus: false });
   const [queue, setQueue] = useState<Card[] | null>(null);
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [index, setIndex] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -26,7 +27,16 @@ export function QuickReview({ onExit }: { onExit: () => void }) {
   const submission = useRef(new ReviewSubmission(() => typeof window === "undefined" ? null : localStorage));
   const toast = useToast();
 
-  useEffect(() => { if (data && queue === null) setQueue(data.items); }, [data, queue]);
+  useEffect(() => {
+    let active = true;
+    setQueue(null); setError(false);
+    api<{ items: Card[] }>("/api/review/queue").then((fresh) => {
+      if (!active) return;
+      setQueue(fresh.items); setIndex(0); setFlipped(false);
+    }).catch(() => { if (active) setError(true); });
+    return () => { active = false; };
+  }, [attempt]);
+
   const card = queue?.[index];
 
   const grade = useCallback(async (g: "forgot" | "hard" | "good") => {
@@ -48,7 +58,7 @@ export function QuickReview({ onExit }: { onExit: () => void }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.repeat || submitting || (e.target as HTMLElement).tagName.match(/INPUT|TEXTAREA|SELECT/)) return;
+      if (e.defaultPrevented || submitting || e.repeat || e.isComposing || document.querySelector('[role="dialog"][aria-modal="true"]') || (e.target as HTMLElement).tagName.match(/INPUT|TEXTAREA|SELECT/)) return;
       if (e.key === " ") { e.preventDefault(); setFlipped((f) => !f); }
       if (e.key === "Escape") onExit();
       if (flipped && e.key === "1") grade("forgot");
@@ -59,12 +69,13 @@ export function QuickReview({ onExit }: { onExit: () => void }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [flipped, grade, onExit, submitting]);
 
+  if (error && !queue) return <div className="index-card p-6 text-center"><p className="text-sm text-muted">复习卡片加载失败</p><button className="btn btn-outline mt-3" onClick={() => setAttempt((n) => n + 1)}>重试</button></div>;
   if (!queue) return <div className="index-card min-h-[300px] grid place-items-center"><Spinner /></div>;
   if (!card) {
     return (
       <div className="index-card px-7 pt-10 pb-7 text-center" style={{ "--course": "var(--accent)" } as React.CSSProperties}>
         <div className="w-10 h-10 mx-auto rounded-full grid place-items-center bg-accent-soft text-accent mb-3"><Check size={20} /></div>
-        <p className="font-serif text-[22px]">{index ? `复习完了，一共 ${index} 张` : "今天没有要复习的卡片"}</p>
+        <p className="text-[22px] font-semibold">{index ? `复习完了，一共 ${index} 张` : "今天没有要复习的卡片"}</p>
         <button className="btn btn-outline mt-5" onClick={onExit}>好的</button>
       </div>
     );
@@ -74,7 +85,7 @@ export function QuickReview({ onExit }: { onExit: () => void }) {
     <div>
       <div className="flip">
         <div className="flip-inner grid" data-flipped={flipped}>
-          <button onClick={() => setFlipped(true)} aria-label="翻面"
+          <button onClick={() => setFlipped(true)} aria-label="翻面" aria-hidden={flipped} tabIndex={flipped ? -1 : 0}
             className="flip-face index-card [grid-area:1/1] min-h-[260px] px-7 pt-10 pb-6 flex flex-col text-left"
             style={{ "--course": colorOf(card.course_color) } as React.CSSProperties}>
             <span className="flex items-center justify-between w-full text-[12px] text-muted">
@@ -82,11 +93,11 @@ export function QuickReview({ onExit }: { onExit: () => void }) {
               <span className="tabular-nums">{index + 1} / {queue.length}</span>
             </span>
             <span className="flex-1 grid place-items-center w-full py-4">
-              <Markdown text={card.front} className="font-serif !text-[20px] !leading-snug text-center" />
+              <Markdown text={card.front} className="font-medium !text-[20px] !leading-snug text-center" />
             </span>
             <span className="text-[12px] text-faint self-center">点击或按空格翻面</span>
           </button>
-          <div className="flip-face flip-back index-card [grid-area:1/1] min-h-[260px] px-7 pt-10 pb-5 flex flex-col"
+          <div aria-hidden={!flipped} inert={!flipped} className="flip-face flip-back index-card [grid-area:1/1] min-h-[260px] px-7 pt-10 pb-5 flex flex-col"
             style={{ "--course": colorOf(card.course_color) } as React.CSSProperties}>
             <p className="text-[12.5px] text-muted mb-2 line-clamp-1">{card.front.replace(/\$+/g, "")}</p>
             <div className="flex-1 overflow-y-auto max-h-[180px]"><Markdown text={card.back} className="text-[14px]" /></div>
@@ -95,7 +106,7 @@ export function QuickReview({ onExit }: { onExit: () => void }) {
       </div>
       <div className={`grid grid-cols-3 gap-2 mt-4 transition-opacity ${flipped ? "" : "opacity-30 pointer-events-none"}`}>
         {GRADES.map(([g, label, k, c]) => (
-          <button key={g} onClick={() => grade(g)} disabled={submitting || conflict || (!!pendingGrade && pendingGrade !== g)} className="h-12 rounded-xl border border-rule hover:border-current flex flex-col items-center justify-center" style={{ color: c }}>
+          <button key={g} onClick={() => grade(g)} disabled={!flipped || submitting || conflict || (!!pendingGrade && pendingGrade !== g)} className="h-12 rounded-xl border border-rule hover:border-current flex flex-col items-center justify-center disabled:opacity-40" style={{ color: c }}>
             <span className="text-[13.5px] font-semibold">{pendingGrade === g ? `重试：${label}` : label} <kbd className="text-[10px] text-faint font-sans">{k}</kbd></span>
             <span className="text-[11px] text-muted">{card.preview && intervalLabel(card.preview[g])}后</span>
           </button>
@@ -104,8 +115,10 @@ export function QuickReview({ onExit }: { onExit: () => void }) {
       <p role="status" className="mt-2 text-[12px] text-muted">
         {submitting ? "正在提交评分…" : conflict ? "这张卡片已在其他窗口评分。" : pendingGrade ? "上次评分尚未确认，重试会提交原评分。" : ""}
         {conflict && <button className="ml-2 text-accent" onClick={async () => {
-          const next = await mutate();
-          if (next) { submission.current.clear(card); setQueue(next.items); setIndex(0); setFlipped(false); setConflict(false); }
+          try {
+            const next = await api<{ items: Card[] }>("/api/review/queue");
+            submission.current.clear(card); setQueue(next.items); setIndex(0); setFlipped(false); setConflict(false);
+          } catch (error) { toast((error as Error).message, "bad"); }
         }}>更新复习队列</button>}
       </p>
       <div className="flex justify-between mt-3 text-[12px]">

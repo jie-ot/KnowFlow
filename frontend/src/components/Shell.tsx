@@ -2,7 +2,7 @@
 
 import {
   BookOpen, BookOpenCheck, CalendarCheck, CalendarDays, CornerDownLeft, FilePlus2, FileStack, FileUp, Layers, Monitor, Moon, Network,
-  Plus, Search, Settings, Sparkles, Sun, Target,
+  PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Sparkles, Sun, Target,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -14,7 +14,7 @@ import { LatestRequest } from "@/lib/search-request";
 import { AiProvider } from "./ai";
 import { AssistantPanel } from "./Assistant";
 import { FocusProvider } from "./Focus";
-import { ConfirmProvider, Dot, Highlight, Modal, ToastProvider, useToast } from "./ui";
+import { ConfirmProvider, Dot, Highlight, Modal, Spinner, ToastProvider, useToast } from "./ui";
 
 const NAV = [
   { href: "/", label: "今天", icon: Sun },
@@ -59,8 +59,15 @@ export function Shell({ children }: { children: ReactNode }) {
 function Frame({ children }: { children: ReactNode }) {
   const [palette, setPalette] = useState(false);
   const [assistant, setAssistant] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => { try { setCollapsed(localStorage.getItem("kf-sidebar-collapsed") === "1"); } catch {} }, []);
+  const toggleSidebar = () => setCollapsed((value) => {
+    try { localStorage.setItem("kf-sidebar-collapsed", value ? "0" : "1"); } catch {}
+    return !value;
+  });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPalette((v) => !v);
@@ -69,6 +76,7 @@ function Frame({ children }: { children: ReactNode }) {
         e.preventDefault();
         setAssistant((v) => !v);
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === "\\") { e.preventDefault(); toggleSidebar(); }
     };
     const onOpen = () => setAssistant(true);
     window.addEventListener("keydown", onKey);
@@ -76,16 +84,16 @@ function Frame({ children }: { children: ReactNode }) {
     return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("kf-assistant", onOpen); };
   }, []);
   return (
-    <div className="flex h-dvh overflow-hidden">
-      <Sidebar onSearch={() => setPalette(true)} onAssistant={() => setAssistant((v) => !v)} assistantOpen={assistant} />
-      <main className="flex-1 min-w-0 overflow-y-auto bg-paper">{children}</main>
+    <div className="app-frame flex h-dvh overflow-hidden" data-collapsed={collapsed}>
+      <Sidebar onSearch={() => setPalette(true)} onAssistant={() => setAssistant((v) => !v)} assistantOpen={assistant} collapsed={collapsed} onToggle={toggleSidebar} />
+      <main id="main-content" className="flex-1 min-w-0 overflow-y-auto bg-paper">{children}</main>
       <CommandPalette open={palette} onClose={() => setPalette(false)} />
       <AssistantPanel open={assistant} onClose={() => setAssistant(false)} />
     </div>
   );
 }
 
-function Sidebar({ onSearch, onAssistant, assistantOpen }: { onSearch: () => void; onAssistant: () => void; assistantOpen: boolean }) {
+function Sidebar({ onSearch, onAssistant, assistantOpen, collapsed, onToggle }: { onSearch: () => void; onAssistant: () => void; assistantOpen: boolean; collapsed: boolean; onToggle: () => void }) {
   const path = usePathname();
   const params = useSearchParams();
   const { data: courses, mutate } = useSWR<Course[]>("/api/courses", fetcher);
@@ -94,34 +102,34 @@ function Sidebar({ onSearch, onAssistant, assistantOpen }: { onSearch: () => voi
   const activeCourse = params.get("course");
 
   return (
-    <aside className="w-[232px] shrink-0 bg-canvas border-r border-rule flex flex-col">
-      <div className="h-14 px-5 flex items-center gap-2">
-        <Logo />
-        <span className="text-[15px] font-semibold tracking-tight">KnowFlow</span>
+    <aside className="app-sidebar shrink-0 bg-canvas border-r border-rule flex flex-col">
+      <div className="sidebar-brand h-[72px] px-5 flex items-center gap-2">
+        {!collapsed && <><Logo /><span className="text-[16px] font-semibold tracking-tight flex-1">KnowFlow</span></>}
+        <button className="btn btn-icon text-muted" onClick={onToggle} aria-label={collapsed ? "展开侧栏" : "收起侧栏"} title={collapsed ? "展开侧栏" : "收起侧栏"} aria-expanded={!collapsed}>
+          {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+        </button>
       </div>
       <div className="px-3">
-        <button onClick={onSearch}
-          className="w-full h-8 px-2.5 mb-3 rounded-lg flex items-center gap-2 text-[13px] text-muted bg-paper border border-rule hover:border-faint transition-colors">
+        <button onClick={onSearch} aria-label="搜索" title="搜索"
+          className="sidebar-search sidebar-action w-full h-10 px-3 mb-4 rounded-xl flex items-center gap-2 text-[13px] text-muted border border-rule hover:border-faint transition-colors">
           <Search size={14} />
-          <span className="flex-1 text-left">搜索</span>
-          <kbd className="text-[11px] text-faint font-sans">⌘K</kbd>
+          {!collapsed && <><span className="flex-1 text-left">搜索</span><kbd className="text-[11px] text-faint font-sans"><ModifierKey /> K</kbd></>}
         </button>
-        <button onClick={onAssistant} aria-pressed={assistantOpen}
-          className={`w-full h-9 px-2.5 mb-3 rounded-lg flex items-center gap-2 text-[13.5px] font-medium transition-colors
-            ${assistantOpen ? "bg-accent text-[var(--accent-ink)]" : "bg-accent-soft text-accent hover:brightness-95"}`}>
+        <button onClick={onAssistant} aria-pressed={assistantOpen} aria-label="问 AI" title="问 AI"
+          className={`sidebar-action w-full h-9 px-2.5 mb-3 rounded-lg flex items-center gap-2 text-[13.5px] font-medium transition-colors
+            ${assistantOpen ? "bg-accent-soft text-accent" : "text-muted row-hover"}`}>
           <Sparkles size={15} />
-          <span className="flex-1 text-left">问 AI</span>
-          <kbd className={`text-[11px] font-sans ${assistantOpen ? "opacity-80" : "opacity-60"}`}>⌘J</kbd>
+          {!collapsed && <><span className="flex-1 text-left">问 AI</span><kbd className="text-[11px] font-sans opacity-60"><ModifierKey /> J</kbd></>}
         </button>
         <nav className="space-y-0.5">
           {NAV.map(({ href, label, icon: Icon }) => {
             const on = href === "/" ? path === "/" : path.startsWith(href);
             return (
-              <Link key={href} href={href}
-                className={`flex items-center gap-2.5 h-8 px-2.5 rounded-lg text-[14px] transition-colors ${on ? "bg-paper font-medium shadow-[0_1px_2px_rgba(0,0,0,0.06)]" : "row-hover"}`}>
+              <Link key={href} href={href} title={label} aria-label={label} aria-current={on ? "page" : undefined}
+                className={`sidebar-action relative flex items-center gap-3 h-11 px-3 rounded-xl text-[14px] transition-colors ${on ? "font-semibold" : "row-hover"}`}>
                 <Icon size={16} className={on ? "text-accent" : "text-muted"} strokeWidth={1.8} />
-                <span className="flex-1">{label}</span>
-                {href === "/review" && due > 0 && (
+                {!collapsed && <span className="flex-1">{label}</span>}
+                {!collapsed && href === "/review" && due > 0 && (
                   <span className="text-[11px] font-semibold tabular-nums px-1.5 rounded-full bg-accent text-[var(--accent-ink)]">{due}</span>
                 )}
               </Link>
@@ -130,7 +138,7 @@ function Sidebar({ onSearch, onAssistant, assistantOpen }: { onSearch: () => voi
         </nav>
       </div>
 
-      <div className="mt-6 px-3 flex-1 overflow-y-auto">
+      <div className={`mt-8 px-3 flex-1 overflow-y-auto ${collapsed ? "invisible" : ""}`}>
         <div className="flex items-center justify-between px-2.5 mb-1">
           <span className="text-[12px] font-medium text-muted">学科</span>
           <button className="btn btn-icon h-6 w-6 text-muted" onClick={() => setAdding(true)} aria-label="新建学科">
@@ -153,21 +161,27 @@ function Sidebar({ onSearch, onAssistant, assistantOpen }: { onSearch: () => voi
         </div>
       </div>
 
-      <div className="p-3 border-t border-rule flex items-center gap-1">
+      <div className={`sidebar-footer p-3 border-t border-rule flex gap-1 ${collapsed ? "flex-col items-center" : "flex-wrap items-center"}`}>
         <Link href="/guide" title="使用说明" aria-label="使用说明"
           className={`btn btn-icon h-8 w-8 ${path.startsWith("/guide") ? "bg-paper text-accent" : "text-muted"}`}>
           <BookOpenCheck size={16} strokeWidth={1.8} />
         </Link>
-        <Link href="/settings"
-          className={`flex-1 flex items-center gap-2.5 h-8 px-2.5 rounded-lg text-[14px] ${path.startsWith("/settings") ? "bg-paper font-medium" : "row-hover"}`}>
+        <Link href="/settings" title="设置" aria-label="设置"
+          className={`flex items-center gap-1.5 h-8 rounded-lg text-[14px] ${collapsed ? "w-8 justify-center" : "flex-1 min-w-[66px] px-2 whitespace-nowrap"} ${path.startsWith("/settings") ? "bg-paper font-medium" : "row-hover"}`}>
           <Settings size={16} className="text-muted" strokeWidth={1.8} />
-          设置
+          {!collapsed && "设置"}
         </Link>
-        <ThemeSwitch />
+        {!collapsed && <ThemeSwitch />}
       </div>
       <CourseDialog open={adding} onClose={() => setAdding(false)} onSaved={() => mutate()} />
     </aside>
   );
+}
+
+export function ModifierKey() {
+  const [key, setKey] = useState("Ctrl");
+  useEffect(() => { if (/Mac|iPhone|iPad/.test(navigator.platform)) setKey("⌘"); }, []);
+  return <>{key}</>;
 }
 
 type Theme = "light" | "dark" | "system";
@@ -273,6 +287,9 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
   const [q, setQ] = useState("");
   const [items, setItems] = useState<SearchItem[]>([]);
   const [index, setIndex] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const router = useRouter();
   const { data: courses } = useSWR<Course[]>("/api/courses", fetcher);
   const courseMap = useMemo(() => Object.fromEntries((courses || []).map((c) => [c.id, c])), [courses]);
@@ -290,16 +307,18 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
   useEffect(() => {
     if (!open) return;
     const request = searchRequest.current.begin();
+    setItems([]); setIndex(0); setLoading(true); setFailed(false);
     const t = setTimeout(async () => {
       try {
         const r = await api<{ items: SearchItem[] }>(`/api/search?limit=12&q=${encodeURIComponent(q)}`, { signal: request.signal });
-        if (!request.current()) return;
-        setItems(r.items);
-        setIndex(0);
-      } catch {}
+        if (request.current()) setItems(r.items);
+      } catch { if (request.current()) setFailed(true); }
+      finally { if (request.current()) setLoading(false); }
     }, 160);
     return () => { clearTimeout(t); searchRequest.current.cancel(); };
-  }, [q, open]);
+  }, [q, open, attempt]);
+
+  useEffect(() => { document.getElementById(`search-result-${index}`)?.scrollIntoView({ block: "nearest" }); }, [index]);
 
   const needle = q.trim().toLowerCase();
   const actions = needle ? ACTIONS.filter((a) => a.label.includes(needle) || a.keys.includes(needle)) : ACTIONS.slice(0, 4);
@@ -320,25 +339,24 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
 
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex justify-center pt-[14vh] px-4 anim-fade" style={{ background: "var(--overlay)" }}
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="anim-sheet w-full max-w-[600px] h-fit bg-paper rounded-2xl border border-rule shadow-2xl overflow-hidden">
-        <div className="flex items-center gap-3 px-4 h-14 border-b border-rule">
+    <Modal open={open} onClose={onClose} label="搜索" width={640}>
+        <div className="flex items-center gap-3 px-5 h-16 border-b border-rule">
           <Search size={17} className="text-muted" />
-          <input ref={input} value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder="搜索笔记、资料和卡片，或输入要做的事"
-            className="flex-1 bg-transparent outline-none text-[15px] placeholder:text-faint"
+          <input ref={input} value={q} maxLength={100} onChange={(e) => setQ(e.target.value)}
+            placeholder="搜索笔记、资料、卡片…" aria-label="搜索内容" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="search-results" aria-activedescendant={total > 0 ? `search-result-${index}` : undefined}
+            className="flex-1 min-w-0 bg-transparent outline-none text-[16px] placeholder:text-faint"
             onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
-              if (e.key === "ArrowDown") { e.preventDefault(); setIndex((i) => Math.min(i + 1, total - 1)); }
+              if (e.nativeEvent.isComposing) return;
+              if (e.key === "ArrowDown") { e.preventDefault(); setIndex((i) => Math.max(0, Math.min(i + 1, total - 1))); }
               if (e.key === "ArrowUp") { e.preventDefault(); setIndex((i) => Math.max(i - 1, 0)); }
-              if (e.key === "Enter" && !e.nativeEvent.isComposing && total) choose(index);
+              if (e.key === "Enter" && total) { e.preventDefault(); e.stopPropagation(); choose(index); }
             }} />
+          {loading ? <Spinner /> : <kbd className="text-[11px] text-faint">Esc</kbd>}
         </div>
-        <div className="max-h-[52vh] overflow-y-auto p-2">
+        <div id="search-results" role="listbox" aria-label="搜索结果" aria-busy={loading} className="max-h-[52vh] overflow-y-auto p-2">
           {actions.length > 0 && <p className="px-3 pt-1 pb-1.5 text-[12px] text-muted">操作</p>}
           {actions.map((a, i) => (
-            <button key={a.id} onMouseEnter={() => setIndex(i)} onClick={() => act(a)}
+            <button key={a.id} id={`search-result-${i}`} role="option" aria-selected={i === index} onMouseEnter={() => setIndex(i)} onClick={() => act(a)}
               className={`w-full flex items-center gap-3 h-10 px-3 rounded-xl text-[14px] text-left ${i === index ? "bg-hover" : ""}`}>
               <a.icon size={15} className="text-muted" />
               <span className="flex-1">{a.label}</span>
@@ -347,7 +365,7 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
           ))}
           {items.length > 0 && <p className="px-3 pt-3 pb-1.5 text-[12px] text-muted">{q ? "搜索结果" : "最近编辑"}</p>}
           {items.map((it, j) => { const i = j + actions.length; return (
-            <button key={it.type + it.id} onMouseEnter={() => setIndex(i)} onClick={() => go(it)}
+            <button key={`${it.type}:${it.id}:${it.unit_id || ""}`} id={`search-result-${i}`} role="option" aria-selected={i === index} onMouseEnter={() => setIndex(i)} onClick={() => go(it)}
               className={`w-full text-left px-3 py-2.5 rounded-xl flex gap-3 ${i === index ? "bg-hover" : ""}`}>
               <Dot color={courseMap[it.course_id]?.color} />
               <span className="flex-1 min-w-0">
@@ -361,9 +379,10 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
               </span>
             </button>
           ); })}
-          {q && total === 0 && <p className="px-3 py-8 text-center text-[13px] text-muted">没有找到包含「{q}」的内容</p>}
+          {failed && <div className="py-6 text-center text-sm text-muted">搜索暂时不可用 <button className="btn text-accent" onClick={() => setAttempt((n) => n + 1)}>重试</button></div>}
+          {!loading && !failed && q && total === 0 && <p className="px-3 py-8 text-center text-[13px] text-muted">没有找到「{q}」</p>}
         </div>
-      </div>
-    </div>
+        <div className="px-5 py-3 border-t border-rule text-[11px] text-muted flex gap-5"><span>↑ ↓ 选择</span><span>Enter 打开</span><span>Esc 关闭</span></div>
+    </Modal>
   );
 }

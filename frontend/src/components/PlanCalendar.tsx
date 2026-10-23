@@ -102,17 +102,17 @@ export function PlanCalendar() {
   };
 
   return (
-    <div className="flex gap-6 items-start max-[1000px]:flex-col">
+    <div className="flex gap-6 items-start max-[1200px]:flex-col">
       <div className="flex-1 min-w-0 w-full">
-        <div className="flex items-center gap-2 mb-4">
-          <h2 className="font-serif text-[24px] leading-none mr-2 tabular-nums">
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <h2 className="font-semibold text-[24px] leading-none mr-2 tabular-nums whitespace-nowrap shrink-0">
             {firstDate.getFullYear()} 年 {firstDate.getMonth() + 1} 月
           </h2>
           <button className="btn btn-icon" onClick={() => shiftMonth(-1)} aria-label="上个月"><ChevronLeft size={17} /></button>
           <button className="btn btn-outline h-7 text-[12px]" onClick={() => setFirst(today.slice(0, 8) + "01")}>今天</button>
           <button className="btn btn-icon" onClick={() => shiftMonth(1)} aria-label="下个月"><ChevronRight size={17} /></button>
           <span className="flex-1" />
-          <span className="flex items-center gap-3 text-[12px] text-muted">
+          <span className="flex items-center gap-3 text-[12px] text-muted whitespace-nowrap">
             <span className="flex items-center gap-1"><Layers size={12} className="text-accent" />到期卡片</span>
             <span className="flex items-center gap-1"><Flag size={12} className="text-bad" />计划截止</span>
           </span>
@@ -177,7 +177,7 @@ export function PlanCalendar() {
         <p className="mt-3 text-[12px] text-faint">拖动任务可以改期；拖到右侧“未排期”就取消日期。点日期右上角的 + 直接添加任务。</p>
       </div>
 
-      <aside className="w-[232px] shrink-0 max-[1000px]:w-full" {...dropProps(null)}>
+      <aside className="w-[232px] shrink-0 max-[1200px]:w-full" {...dropProps(null)}>
         <div className={`rounded-xl border border-dashed p-3 transition-colors ${over === "none" ? "border-accent bg-accent-soft" : "border-rule"}`}>
           <h3 className="section-title mb-2">未排期 <span className="font-normal text-faint">{data?.unscheduled.length ?? ""}</span></h3>
           <div className="flex flex-col gap-1">
