@@ -39,7 +39,10 @@ def test_image_and_scanned_pdf(client):
     png, pdf = io.BytesIO(), io.BytesIO()
     img.save(png, "PNG")
     img.save(pdf, "PDF")
-    cid = client.get("/api/courses").json()[0]["id"]
+    # Normal startup intentionally leaves the workspace empty.
+    course = client.post("/api/courses", json={"name": "OCR 验收", "color": "blue"})
+    assert course.status_code == 201
+    cid = course.json()["id"]
     files = [("files", ("board.png", png.getvalue(), "image/png")), ("files", ("scan.pdf", pdf.getvalue(), "application/pdf"))]
     res = client.post("/api/materials", data={"course_id": cid}, files=files).json()["results"]
     for r in res:

@@ -49,3 +49,17 @@ def normalize_extracted(text: str) -> str:
     text = "\n".join(line.rstrip() for line in text.split("\n"))
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def normalize_math_delimiters(text: str) -> str:
+    """Render common model LaTeX delimiters, preserving code and dollar math."""
+    pattern = r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`|\$\$[\s\S]*?\$\$|\$[^$\n]*\$)|\\\[([\s\S]*?)\\\]|\\\(([^\n]*?)\\\)"
+
+    def replace(match: re.Match[str]) -> str:
+        if match[1] is not None:
+            return match[0]
+        if match[2] is not None:
+            return "\n\n$$\n" + match[2].strip() + "\n$$\n\n"
+        return "$" + match[3].strip() + "$"
+
+    return re.sub(pattern, replace, text)

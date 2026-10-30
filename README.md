@@ -95,6 +95,18 @@ KnowFlow 是一个在你自己电脑上运行的学习应用。你可以在里�
 
 ## 🚀 安装与启动
 
+### 验收演示网页版（队友使用）
+
+拉取最新代码后，Windows 双击根目录 `start-demo.bat`；macOS / Linux 运行 `python3 demo/run_demo.py`。需要 Python 3.11+，首次启动会联网安装 Python 依赖，已包含编译好的网页，无需安装 Node.js。
+
+首次启动自动载入共享快照：4 门学科、32 篇笔记、39 张卡片、15 份资料，以及已保存的计划、复习记录和小结。资料原件随 `demo/share/materials.zip` 一起恢复，笔记出处可以回到原文。复习和计划日期会按首次启动当天整体平移。现场上传文件在启动后生成的 `demo/.local/现场素材/` 中，包括 `现场练习_连接代价与索引.md`。
+
+打开 **设置 › 大模型 › 添加配置**，填写自己的 API Key，测试并保存后即可使用 AI。共享快照不含模型配置或 Key；填写后的配置仅保存在本机 `demo/.local/data/knowflow.db`，下次启动不用重填，该目录不会提交到 Git。
+
+后续正常启动保留各自的修改，不会随 `git pull` 覆盖本机数据。若要重新载入仓库快照，先关闭演示服务，再运行 `python demo/run_demo.py --reset`：现有数据先备份到 `demo/.local/backups/`，本机模型配置会保留。日常空白工作区仍使用下方的 `python run.py` / `start.bat`，与演示数据独立。
+
+共享内容清单见 [`demo/share/manifest.json`](demo/share/manifest.json)。维护者可运行 `python demo/export_demo.py` 更新共享快照，导出会移除模型配置、Key、AI 临时草稿和设备操作回执；**资料包包含清单中的课件原件，发布前需核对共享范围**。
+
 KnowFlow 有三种用法，用的是同一套代码和同一份数据：
 
 | 用法 | 需要装什么 | 怎么启动 |
@@ -167,6 +179,8 @@ macOS / Linux 运行 `./start.sh` 使用已编译网页；运行 `./start.sh --d
 KnowFlow/
 ├── run.py                   一条命令启动（装依赖、起服务、打开浏览器或窗口）
 ├── start.bat                Windows 双击启动前后端，等同于 python run.py --dev
+├── start-demo.bat           Windows 启动带验收数据的网页版
+├── demo/                    共享快照和启动脚本；本机修改只写入被忽略的 .local/
 ├── start.sh                 macOS / Linux 启动，可加 --dev
 ├── docs/合并需求说明.md      两份需求文档如何合并、做了哪些、没做哪些
 ├── backend/                 FastAPI + SQLite
@@ -222,6 +236,7 @@ backend/.venv/bin/python packaging/build_desktop.py   # 生成 dist/KnowFlow.app
 - 数据存在 `backend/data/` 里（桌面应用在 `%APPDATA%\KnowFlow` 或 `~/Library/Application Support/KnowFlow`），包括笔记数据库和上传的资料原件。备份推荐用 设置 › 备份 › 导出备份，换电脑时在同一处选择备份文件恢复；直接复制整个数据文件夹也可以。
 - 后端只监听 `127.0.0.1`，同一局域网的其他设备访问不到；不是来自本机前端的写请求会被拒绝。
 - `backend/data/`、虚拟环境和打包产物都已写进 `.gitignore`，不会被提交到仓库。
+- 验收工作区的 `demo/.local/` 也不会提交。只有明确导出的 `demo/share/` 快照与资料包用于共享；它包含所选课程内容，不含模型配置或 Key。
 
 ## ❓ 常见问题
 
@@ -240,7 +255,3 @@ zip 是用浏览器下载、资源管理器解压的，文件带着“来自互�
 ## 📚 文档
 
 - [合并需求说明](docs/合并需求说明.md)：两份需求文档的冲突取舍、已实现功能、暂不实现的功能和限额来源
-
-## 🗺️ 暂未实现
-
-多篇笔记生成提纲。原因见合并需求说明第 3 节。

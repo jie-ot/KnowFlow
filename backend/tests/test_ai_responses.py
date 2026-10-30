@@ -177,16 +177,51 @@ def test_assistant_round_limit_is_incomplete(client, monkeypatch):
     assert result[-1][0] == "error" and result[-1][1]["error"]["kind"] == "TRUNCATED"
 
 
-def test_organize_truncation_keeps_partial_failed_draft_and_original_note(client, monkeypatch):
+@pytest.mark.parametrize("partial", ["partial", ""])
+def test_organize_truncation_keeps_partial_failed_draft_and_original_note(client, monkeypatch, partial):
     course = client.get("/api/courses").json()[0]["id"]
     note = client.post("/api/notes", json={"course_id": course, "title": "source", "content": "original"}).json()
-    text = stream([{"choices": [{"delta": {"content": "partial"}, "finish_reason": "length"}]}])
+    text = stream([{"choices": [{"delta": {"content": partial}, "finish_reason": "length"}]}])
     monkeypatch.setattr(gateway, "TRANSPORT", httpx.MockTransport(lambda _: httpx.Response(200, text=text)))
     result = events(client.post("/api/ai/run", json={"kind": "organize", "note_id": note["id"]}))
     assert result[-1][0] == "error" and result[-1][1]["error"]["kind"] == "TRUNCATED"
     draft = client.get(f"/api/ai/drafts/{result[0][1]['draft_id']}").json()
-    assert (draft["status"], draft["output"]) == ("failed", "partial")
+    assert (draft["status"], draft["output"]) == ("failed", partial or None)
     assert client.get(f"/api/notes/{note['id']}").json()["content"] == "original"
+
+
+@pytest.mark.parametrize("mode", ["chat", "stream", "tools"])
+@pytest.mark.parametrize("url,model,fast", [
+    ("https://api.deepseek.com/v1", "deepseek-flash", True),
+    ("https://gateway.example.com", "deepseek-flash", False),
+    ("https://api.deepseek.com", "deepseek-reasoner", False),
+])
+def test_flash_fast_mode_applies_to_all_request_paths_without_changing_other_providers(monkeypatch, mode, url, model, fast):
+    import asyncio
+    captured = []
+
+    def respond(request):
+        body = json.loads(request.content)
+        captured.append(body)
+        if body["stream"]:
+            return httpx.Response(200, text=stream([{"choices": [{"delta": {"content": "complete"}, "finish_reason": "stop"}]}]))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "complete"}, "finish_reason": "stop"}]})
+
+    monkeypatch.setattr(gateway, "TRANSPORT", httpx.MockTransport(respond))
+    cfg = gateway.ModelConfig(base_url=url, api_key="test-only", model=model)
+    opts = dict(max_tokens=256, temperature=.3, idle_timeout=1, total_timeout=3)
+
+    async def call():
+        if mode == "chat":
+            assert (await gateway.chat(cfg, [{"role": "user", "content": "summarize"}], **opts)).content == "complete"
+        else:
+            source = gateway.stream_chat_tools(cfg, [{"role": "user", "content": "find notes"}], tools=[], **opts) if mode == "tools" else gateway.stream_chat(cfg, [{"role": "user", "content": "summarize"}], **opts)
+            values = [value async for kind, value in source if kind == "delta"]
+            assert "".join(values) == "complete"
+
+    asyncio.run(call())
+    assert len(captured) == 1
+    assert captured[0].get("thinking") == ({"type": "disabled"} if fast else None)
 
 
 @pytest.mark.parametrize("data,parser", [

@@ -621,7 +621,7 @@ function Editor({ id, courses, known, titles, fresh, startEdit, listHidden, onTo
       </div>
 
       <div className="h-8 px-6 flex items-center gap-4 border-t border-rule text-[11.5px] text-faint shrink-0">
-        <span role="status">{saveView ? ({ saved: "已同步到后端", saving: `${saveView.localSaved ? "已存本地，" : ""}正在同步…`, dirty: saveView.localSaved ? "已存本地，尚未同步" : "尚未同步，本地草稿不可用", error: saveView.localSaved ? "已存本地，同步失败" : "同步失败，本地草稿不可用", conflict: saveView.localSaved ? "已存本地，版本冲突" : "版本冲突，本地草稿不可用" })[saveView.status] : "正在载入…"}</span>
+        <span role="status">{saveView ? ({ saved: "已保存到本机", saving: `${saveView.localSaved ? "草稿已保留，" : ""}正在保存…`, dirty: saveView.localSaved ? "草稿已保留，等待保存" : "尚未保存，本地草稿不可用", error: saveView.localSaved ? "草稿已保留，保存失败" : "保存失败，本地草稿不可用", conflict: saveView.localSaved ? "草稿已保留，版本冲突" : "版本冲突，本地草稿不可用" })[saveView.status] : "正在载入…"}</span>
         {saveView?.status === "error" && <button className="text-accent" title={saveView.error || undefined} onClick={() => save()}>重试同步</button>}
         <span className="tabular-nums">{chars} 字</span>
         {links && links.backlinks.length > 0 && <span className="flex items-center gap-1"><Link2 size={11} />{links.backlinks.length} 篇笔记链接到这里</span>}

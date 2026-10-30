@@ -14,6 +14,7 @@ export default function MaterialsPage() {
   const [course, setCourse] = useState("");
   const [drag, setDrag] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const [filter, setFilter] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [destination, setDestination] = useState("");
@@ -35,6 +36,7 @@ export default function MaterialsPage() {
     const oversized = chosen.find((f) => f.size > 20_000_000);
     if (oversized) { toast(`「${oversized.name}」超过 20 MB`, "bad"); return; }
     setDestination(course || (courses?.length === 1 ? courses[0].id : ""));
+    setUploadError("");
     setFiles(chosen);
   };
 
@@ -44,16 +46,22 @@ export default function MaterialsPage() {
     form.append("course_id", destination);
     Array.from(files).forEach((f) => form.append("files", f));
     setUploading(true);
+    setUploadError("");
     try {
       const r = await api<{ results: { name: string; ok: boolean; message?: string }[] }>("/api/materials", { method: "POST", body: form });
       const bad = r.results.filter((x) => !x.ok);
-      if (bad.length) toast(bad.map((b) => `${b.name}：${b.message}`).join("；"), "bad");
+      if (bad.length) {
+        const message = bad.map((b) => `${b.name}：${b.message}`).join("；");
+        setUploadError(message);
+        toast(message, "bad");
+      }
       else toast(`已上传 ${r.results.length} 个文件，正在解析`);
       setFiles((selected) => selected.filter((f) => bad.some((b) => b.name === f.name)));
       setCourse(destination);
       mutate();
       globalMutate("/api/courses");
     } catch (e) {
+      setUploadError((e as Error).message);
       toast((e as Error).message, "bad");
     } finally {
       setUploading(false);
@@ -117,6 +125,7 @@ export default function MaterialsPage() {
         <button className="btn btn-primary" disabled={!destination || uploading} onClick={upload}>{uploading ? <><Spinner />上传中…</> : `上传 ${files.length} 个文件`}</button>
       </>}>
         <div className="p-5 space-y-5">
+          {uploadError && <p role="alert" className="rounded-xl bg-bad-soft px-4 py-3 text-[13px] text-bad">{uploadError}</p>}
           <div>
             <label className="label" htmlFor="upload-course">保存到学科</label>
             <div className="flex gap-2">

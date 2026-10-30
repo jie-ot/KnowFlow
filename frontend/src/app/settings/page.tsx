@@ -39,7 +39,7 @@ function Models() {
   return (
     <div>
       <p className="text-[14px] text-muted mb-6 leading-relaxed">
-        支持任何 OpenAI 兼容接口（DeepSeek、阿里云百炼、Kimi 等）。API Key 只保存在这台电脑的本地数据库里，页面上只显示后 4 位，不会发给除你填写的服务商以外的任何地方。
+        支持 OpenAI 兼容接口（DeepSeek、阿里云百炼、Kimi 等）。API Key 只保存在这台电脑的本地数据库里，页面上只显示后 4 位。连接 DeepSeek 官方 Flash 时使用非思考模式，以适配短摘要、资料整理和助手查询。
       </p>
       <div className="border-y border-rule divide-y divide-rule">
         {configs?.map((c) => (

@@ -1,0 +1,7 @@
+.local/
+private/
+演示素材.zip
+/share/*
+!/share/knowflow-demo.sqlite3
+!/share/manifest.json
+!/share/materials.zip

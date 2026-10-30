@@ -791,6 +791,8 @@ async def run_task(body: RunIn) -> StreamingResponse:
                     elif kind == "usage":
                         usage = value
                 output = "".join(parts).strip()
+                if finish_reason == "length":
+                    raise LLMError("TRUNCATED", "输出达到长度上限被截断，请减少内容或检查模型的输出设置后重试", detail=output[-2000:] or None)
                 if not output:
                     raise LLMError("EMPTY")
                 warnings: list[str] = []
@@ -798,8 +800,6 @@ async def run_task(body: RunIn) -> StreamingResponse:
                     warnings = check_preserve(spec.context["original"], output)
                 else:
                     warnings = check_summary(spec.context["original"], output, spec.params["length"])
-                if finish_reason == "length":
-                    raise LLMError("TRUNCATED", "输出达到长度上限被截断，请把笔记分段后重试", detail=output[-2000:])
                 draft = _finish_draft(draft_id, generation=generation, status="ready", output=output, warnings=warnings, usage=usage,
                                       resolved_at=None)
             elif spec.kind == "compose":

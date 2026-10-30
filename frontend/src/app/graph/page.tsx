@@ -182,6 +182,8 @@ function Graph() {
     setView({ k, x: -((x0 + x1) / 2) * k, y: -((y0 + y1) / 2) * k });
   }, []);
 
+  useEffect(() => { if (nodes.current.length) fit(); }, [size.w, size.h, fit]);
+
   // 建立力导向模拟；数据变化时保留已有节点的位置
   const hasEdges = (data?.edges.length || 0) > 0;
   useEffect(() => {
@@ -201,9 +203,10 @@ function Graph() {
     let raf = 0;
     let fitted = prev.size > 0;
     const s = forceSimulation<SimNode>(ns)
-      .force("link", forceLink<SimNode, SimLink>(ls).id((d) => d.id).distance(70).strength(0.5))
+      .force("link", forceLink<SimNode, SimLink>(ls).id((d) => d.id).distance(120).strength(0.35))
       .force("charge", forceManyBody<SimNode>().strength(-200).distanceMax(420))
-      .force("collide", forceCollide<SimNode>().radius((d) => d.r + 16))
+      // Leave room for two lines of Chinese labels, not just the node circles.
+      .force("collide", forceCollide<SimNode>().radius((d) => Math.max(64, d.r + 32)).iterations(2))
       .force("x", forceX<SimNode>((d) => anchor.get(d.course_id)!.x).strength(0.07))
       .force("y", forceY<SimNode>((d) => anchor.get(d.course_id)!.y).strength(0.07))
       .alphaDecay(0.035)
@@ -479,13 +482,15 @@ function Graph() {
                     onPointerEnter={() => !drag.current && setHovered(n.id)}
                     onPointerLeave={() => setHovered((h) => (h === n.id ? null : h))}
                     onDoubleClick={() => router.push(`/notes?id=${n.id}`)}>
+                    <title>{n.title}</title>
                     {isSel && <circle r={n.r + 5} fill="none" stroke="var(--accent)" strokeWidth={2} />}
                     <circle r={n.r} fill={colorOf(courseMap[n.course_id]?.color)} stroke="var(--paper)" strokeWidth={1.8} />
                     {showLabel && (
                       <text y={n.r + 13} textAnchor="middle" fontSize={11.5 / Math.max(view.k, 0.75)}
                         fill={n.id === focus || isSel ? "var(--ink)" : "var(--muted)"} fontWeight={n.id === focus || isSel ? 600 : 400}
                         stroke="var(--canvas)" strokeWidth={3 / Math.max(view.k, 0.75)} paintOrder="stroke" strokeLinejoin="round">
-                        {n.title.length > 18 ? n.title.slice(0, 17) + "…" : n.title}
+                        <tspan x={0}>{n.title.slice(0, 10)}</tspan>
+                        {n.title.length > 10 && <tspan x={0} dy={14 / Math.max(view.k, 0.75)}>{n.title.length > 20 ? n.title.slice(10, 19) + "…" : n.title.slice(10)}</tspan>}
                       </text>
                     )}
                   </g>

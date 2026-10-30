@@ -147,6 +147,18 @@ def _timeout(idle: float) -> httpx.Timeout:
     return httpx.Timeout(connect=15.0, read=idle, write=30.0, pool=15.0)
 
 
+def _provider_options(cfg: ModelConfig) -> dict[str, Any]:
+    # Official Flash defaults to thinking, which can exhaust short-summary
+    # budgets before content and requires reasoning replay for tool calls.
+    # KnowFlow's bounded editing/assistant tasks use its non-thinking mode.
+    # Do not forward vendor options to arbitrary compatible gateways.
+    if host_of(cfg.base_url) == "api.deepseek.com" and cfg.model in {
+        "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+    }:
+        return {"thinking": {"type": "disabled"}}
+    return {}
+
+
 def _wrap_transport_error(exc: Exception, cfg: ModelConfig) -> LLMError:
     if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, TimeoutError)):
         return LLMError("TIMEOUT")
@@ -213,6 +225,7 @@ async def stream_chat(
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    payload.update(_provider_options(cfg))
     deadline = time.monotonic() + total_timeout
     terminated = False
     saw_packet = False
@@ -287,6 +300,7 @@ async def stream_chat_tools(
     }
     if tools:
         payload["tools"] = tools
+    payload.update(_provider_options(cfg))
     deadline = time.monotonic() + total_timeout
     terminated = False
     saw_packet = False
@@ -378,6 +392,7 @@ async def chat(
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    payload.update(_provider_options(cfg))
     started = time.monotonic()
     async with _semaphore():
         if before_request is not None:

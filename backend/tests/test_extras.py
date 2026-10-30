@@ -37,3 +37,18 @@ def test_backup_restore(client):
     assert client.get("/api/ai/status").json()["configured"]  # 本机的模型配置保留
     bad = client.post("/api/restore", files={"file": ("x.zip", b"nope", "application/zip")})
     assert bad.status_code == 422
+
+
+def test_weekly_overdue_excludes_tasks_due_today(client):
+    from datetime import date, timedelta
+    today = client.get("/api/tasks/today").json()["today"]
+    plan = client.post("/api/plans", json={"goal": "检查周小结的日期边界"}).json()
+    for title, offset in [("昨日未完成", -1), ("今日待完成", 0), ("明日安排", 1)]:
+        response = client.post(f"/api/plans/{plan['id']}/tasks", json={
+            "title": title, "kind": "read", "due_date": str(date.fromisoformat(today) + timedelta(days=offset)),
+        })
+        assert response.status_code == 201
+    stats = client.get("/api/summaries/week-stats").json()
+    overdue = {task["title"] for task in stats["tasks_overdue"]}
+    assert "昨日未完成" in overdue
+    assert "今日待完成" not in overdue and "明日安排" not in overdue

@@ -21,6 +21,7 @@ from pygments.lexers import TextLexer, get_lexer_by_name
 from pygments.util import ClassNotFound
 
 from .links import map_links
+from .text import normalize_math_delimiters
 
 _FORMATTER = HtmlFormatter(cssclass="hl", style="friendly")
 
@@ -79,7 +80,7 @@ def render_markdown(text: str, prefix: str, anchors: dict[str, str] | None = Non
     anchors = anchors or {}
     cleaned = map_links(cleaned, lambda title, label: f"[{label}](#{anchors[title.lower()]})"
                         if title.lower() in anchors else label)
-    return md.render(cleaned, {"docId": prefix})
+    return md.render(normalize_math_delimiters(cleaned), {"docId": prefix})
 
 
 def note_to_markdown(note: dict[str, Any], course_name: str) -> str:

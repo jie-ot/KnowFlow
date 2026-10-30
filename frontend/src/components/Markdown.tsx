@@ -7,6 +7,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { NoteLinks } from "@/lib/api";
+import { normalizeMathDelimiters } from "@/lib/math-delimiters";
 
 /** 旧格式 /materials/<id>?unit=… 转成 /materials/view?id=…&unit=… */
 const appHref = (href: string) => {
@@ -72,7 +73,7 @@ export function Markdown({ text, className = "", known, noCreate, noteId, links 
           },
         }}
       >
-        {text.includes("[[") ? wikify(text) : text}
+        {normalizeMathDelimiters(text.includes("[[") ? wikify(text) : text)}
       </ReactMarkdown>
     </div>
   );

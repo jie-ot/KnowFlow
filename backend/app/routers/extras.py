@@ -98,7 +98,9 @@ WEEKLY_PROMPT = """你是学生的学习教练。根据下面这一周的真实�
 1–3 条，例如总是忘的知识点（点名具体卡片）、逾期的任务、复习中断的日子。
 ## 下周建议
 3 条以内，具体可执行（哪天做什么、先复习哪些）。
-不要编造数据里没有的内容；数据很少时就如实说并给出起步建议。总字数 400 字以内。"""
+不要编造数据里没有的内容；数据很少时就如实说并给出起步建议。
+统计截止日仍在进行，截止日的零记录只表示暂未记录；当天到期但未完成的任务不算逾期。
+不要把一次统计直接推断为长期习惯。总字数 400 字以内。"""
 
 
 def weekly_stats(conn: sqlite3.Connection, end: str) -> tuple[str, str, dict[str, Any]]:
@@ -118,7 +120,7 @@ def weekly_stats(conn: sqlite3.Connection, end: str) -> tuple[str, str, dict[str
         "WHERE t.status = 'done' AND substr(t.completed_at, 1, 10) BETWEEN ? AND ? LIMIT 30", (start, end))]
     overdue = [dict(r) for r in conn.execute(
         "SELECT t.title, t.due_date, p.goal FROM tasks t JOIN plans p ON p.id = t.plan_id "
-        "WHERE p.archived = 0 AND t.status != 'done' AND t.due_date IS NOT NULL AND t.due_date <= ? LIMIT 20", (end,))]
+        "WHERE p.archived = 0 AND t.status != 'done' AND t.due_date IS NOT NULL AND t.due_date < ? LIMIT 20", (end,))]
     focus = conn.execute("SELECT COALESCE(SUM(minutes), 0) FROM focus_sessions WHERE logical_day BETWEEN ? AND ?",
                          (start, end)).fetchone()[0]
     notes_new = conn.execute("SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL AND substr(created_at, 1, 10) BETWEEN ? AND ?",
