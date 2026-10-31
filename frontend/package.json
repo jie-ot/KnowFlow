@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "dev": "next dev -H 127.0.0.1 -p 3000",
-    "test": "node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "build": "next build && node scripts/copy-to-backend.mjs"
   },

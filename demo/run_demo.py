@@ -209,12 +209,17 @@ def workspace_lock():
 def main() -> int:
     if sys.version_info < (3, 11):
         raise RuntimeError("需要 Python 3.11 或更新版本，请安装后重试。")
-    parser = argparse.ArgumentParser(description="KnowFlow 验收演示：独立数据库、保留 Key、自动平移复习与计划日期")
+    parser = argparse.ArgumentParser(
+        description="KnowFlow 演示：独立数据库、保留 Key、自动平移复习与计划日期",
+        epilog="日常工作区：python run.py --personal；开发模式：python run.py --dev。",
+    )
     parser.add_argument("--reset", action="store_true", help="备份当前演示数据库后恢复起始场景，保留本机模型配置")
     parser.add_argument("--check", action="store_true", help="只检查数据和依赖，不启动网站、不调用模型")
     parser.add_argument("--date", type=date.fromisoformat, help="场景基准日，默认本机逻辑日（4点分界）")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-open", action="store_true")
+    parser.add_argument("--dev", action="store_true", help="启动前端开发服务器，需要 Node.js 20.9+")
+    parser.add_argument("--frontend-port", type=int, default=3000, help="开发前端首选端口")
     args = parser.parse_args()
     today = args.date or (datetime.now().astimezone() - timedelta(hours=4)).date()
     with workspace_lock():
@@ -235,6 +240,8 @@ def main() -> int:
             return 1 if issues else 0
         env = {**os.environ, "KNOWFLOW_DATA_DIR": str(DATA), "PYTHONIOENCODING": "utf-8"}
         command = [sys.executable, str(ROOT / "run.py"), "--port", str(args.port)]
+        if args.dev:
+            command.extend(["--dev", "--frontend-port", str(args.frontend_port)])
         if args.no_open:
             command.append("--no-open")
         print("[KnowFlow 演示] 数据仅写入 demo/.local；日常 backend/data 不受影响。", flush=True)

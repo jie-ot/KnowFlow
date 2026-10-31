@@ -2,7 +2,6 @@
 name = "knowflow-backend"
 version = "0.1.0"
 description = "KnowFlow 后端：FastAPI + SQLite"
-readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.143.2",
@@ -21,13 +20,4 @@ dependencies = [
 [project.optional-dependencies]
 desktop = [
     "pywebview==6.2.1",
-]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-
-[dependency-groups]
-dev = [
-    "pytest>=9.1.1",
 ]

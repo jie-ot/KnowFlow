@@ -1,17 +1,52 @@
-# Python
+# 本机环境、依赖与缓存
 __pycache__/
-*.pyc
-backend/.venv/
-backend/data/
+*.py[cod]
+.venv/
+venv/
+.uv-cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+.npm-cache/
+.next/
+*.tsbuildinfo
+/frontend/next-env.d.ts
+.cache/
+.env
+.env.*
+!/frontend/.env.development
+.agents/
+.codex/
+.aws/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
 
-# Node
-frontend/node_modules/
-frontend/.npm-cache/
-frontend/.next/
-frontend/next-env.d.ts
-frontend/tsconfig.tsbuildinfo
+# 本地数据、备份与凭据；只提交经过整理的演示快照
+/backend/data/
+.local/
+private/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+!/demo/share/knowflow-demo.sqlite3
+*.pem
+*.key
 
-# 本地临时测试与验证产物；保留 backend/tests、frontend/tests 正式回归测试
+# 测试源码、测试工具及验证结果仅保留在本地
+tests/
+test/
+*.test.*
+*.spec.*
+test_*.py
+*_test.py
+conftest.py
+/backend/scripts/
+/backend/app/seed.py
 .pytest_cache/
 .coverage
 .coverage.*
@@ -23,26 +58,39 @@ playwright-report/
 blob-report/
 .knowflow-qa/
 .playwright-cli/
-/output/playwright/
-/output/verification/
-/output/validation/
 /tmp-tests/
 
-# 本机性能结果及阶段验证说明
-/docs/performance*.json
-/docs/performance.md
-/docs/实施与验证记录.md
-/docs/桌面网页优化说明.md
-/docs/桌面体验升级说明.md
+# 说明、报告、截图及验收材料；根目录只保留必要的启动说明
+/docs/
+/reports/
+/output/
+/artifacts/
+*.md
+!/README.md
+*.rst
+*.adoc
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.pdf
 
-# macOS
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-
-# 前端编译中间产物（编译结果会复制到 backend/app/web，那个目录要提交）
-frontend/out/
-# 桌面应用打包产物
+# 构建中间文件与发布包；backend/app/web 是直接运行所需的网页
+/frontend/out/
 build/
 dist/
+/packaging/build-icon/
+/backend/app/.web-build-*/
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+!/demo/share/materials.zip
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej

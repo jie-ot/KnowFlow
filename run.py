@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """KnowFlow 一条命令启动（macOS / Windows / Linux 通用，只需要 Python 3.11+）。
 
-    python run.py          用浏览器打开（网页端）
+    python run.py          用浏览器打开演示工作区（网页端）
+    python run.py --personal  打开原有日常工作区
     python run.py --app    用独立窗口打开（桌面端）
-    python run.py --dev    同时启动 React 开发前端和 FastAPI（需要 Node.js 20.9+）
+    python run.py --dev    用演示数据启动 React 开发前端和 FastAPI（需要 Node.js 20.9+）
 
 第一次运行会在 backend/.venv 里创建虚拟环境并安装依赖，之后直接启动。
 默认使用官方 PyPI，可用 PIP_INDEX 环境变量指定其他镜像。
@@ -129,11 +130,18 @@ def main() -> int:
         say(f"需要 Python 3.11 或更新版本，当前是 {sys.version.split()[0]}。请从 https://www.python.org 安装。")
         return 1
 
-    desktop = "--app" in sys.argv[1:]
-    dev = "--dev" in sys.argv[1:]
+    argv = sys.argv[1:]
+    personal = "--personal" in argv
+    if personal:
+        argv = [arg for arg in argv if arg != "--personal"]
+        sys.argv = [sys.argv[0], *argv]
+    desktop = "--app" in argv
+    dev = "--dev" in argv
     if desktop and dev:
         say("--app 和 --dev 不能同时使用。")
         return 1
+    if not personal and not desktop and not os.environ.get("KNOWFLOW_DATA_DIR"):
+        return subprocess.call([sys.executable, str(ROOT / "demo" / "run_demo.py"), *argv], cwd=ROOT)
     req_files = [BACKEND / "requirements.txt"] + ([BACKEND / "requirements-desktop.txt"] if desktop else [])
     digest = hashlib.sha256(b"".join(f.read_bytes() for f in req_files)).hexdigest()
 

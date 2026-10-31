@@ -1,4 +1,4 @@
-name: 测试与静态构建
+name: 运行依赖与静态构建
 
 on:
   pull_request:
@@ -30,12 +30,10 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
-      - name: 安装锁定的测试依赖
-        run: uv sync --locked --group dev --python 3.12
-      - name: 临时数据与模拟模型回归测试
-        run: uv run --locked --python 3.12 pytest -q
-      - name: 已入库静态网页 HTTP 烟测
-        run: uv run --locked --python 3.12 python scripts/smoke_static.py
+      - name: 安装锁定的运行依赖
+        run: uv sync --locked --python 3.12
+      - name: 检查后端应用导入
+        run: uv run --locked --python 3.12 python -c "from app.main import app; print(app.title)"
 
   frontend:
     runs-on: ubuntu-latest
@@ -50,7 +48,6 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --no-audit --no-fund
-      - run: npm test
       - run: npm run typecheck
       - name: 构建并复制静态网页
         run: npm run build

@@ -1,8 +1,7 @@
 @echo off
-rem Double-click starts React + FastAPI; use --app for the packaged desktop window.
+rem Double-click opens the demo website; use --dev for frontend development.
 cd /d "%~dp0"
 set "KNOWFLOW_ARGS=%*"
-if "%~1"=="" set "KNOWFLOW_ARGS=--dev"
 if exist "backend\.venv\Scripts\python.exe" (
   "backend\.venv\Scripts\python.exe" run.py %KNOWFLOW_ARGS%
   goto end
